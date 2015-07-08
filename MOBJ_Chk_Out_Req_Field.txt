@@ -138,12 +138,18 @@ End ;; Ed
 ;;;;; =====================
 
 Subroutine Build_Header(isMsg23)
+  Declare PersonID_Str = VC
+  Declare EncntrID_Str   = VC
+  Set PersonID_Str = CnvtString(Get_Double_Value("person_id"))
+  Set EncntrID_Str   = CnvtString(Get_Double_Value("encntr_id"))
   Declare tmpHeader = VC
   Set tmpHeader = ConCat(
        "CTRL ID-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_ctrl_id->ctrl_id1), FIELD_SEP,
        "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
        "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
-       "CLIENT-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->sending_facility->name_id)
+       "CLIENT-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->sending_facility->name_id), FIELD_SEP,
+       "PERSON_ID-", Trim(PersonID_Str), FIELD_SEP,
+       "ENCNTR_ID-", Trim(EncntrID_Str)
        ;;;;;,FIELD_SEP, "This is just a test!!, disregard!!!"
    );; End the concat
   ;; Insert this at the beginning
