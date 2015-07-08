@@ -1,0 +1,216 @@
+execute oencpm_msglog build("Begin of MOBJ_Chk_Out_Req_Field", char(0))
+;;;delare t=f8
+/*****************
+  SP - AG - 07/07/2015 - script will check fields for valid values (not empty) and if found to be
+  empty or some other not allowed value, will send a notification. The script will then take the
+  appropriate action: process or dump
+  Would be nice to move alot of this to an include file, but would make it harder to move from env
+  to env
+ *****************/
+Free Record Missing_Field
+Record Missing_Field
+ (
+   1 MF[*]
+     2 FieldName = VC
+     2 ShouldDumpMsg = I2
+ )  ;; End
+
+Free Record Email_List
+Record Email_List
+ (
+    1 EL[*]
+       2 To_Address = VC
+ )
+
+Declare TAB = C1 With Public,
+  Constant(Char(9))
+Declare FIELD_SEP = C2 With Public,
+  Constant(ConCat(Char(13), Char(10)))   ;; NL
+
+Declare DUMP_MSG_YES = I2 With Public,
+  Constant(TRUE)
+Declare DUMP_MSG_NO = I2 With Public,
+  Constant(FALSE)
+
+Declare MyEnv = VC With Public,
+  Constant(CnvtLower(Logical("ENVIRONMENT")))
+Declare EmailDate = VC With Public,
+  Constant(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D"))
+Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
+  Constant("Bryan.McKay@sjmc.org")
+Declare FromEmailAddress = VC With Public,
+  Constant(ConCat("out_required_missing_", Trim(MyEnv), "@stjohn.org"))
+
+Declare Add_To_Email_List(emailToAdd) = I2
+Declare Build_Msg_To_Send(is23) = VC
+Declare Build_Header(isMsg23) = VC
+Declare Send_Email_Msg(toEmail, msgToSend) = I2
+Declare Check_Field_For_Empty(fieldToCheck, dumpMsg, msgStr) = I2
+Declare Check_4_Dump_Msg(junk) = I2
+
+Declare Get_Double_Value(strMean) = F8
+Declare MCORF_Encntr_ID = F8 With Public,
+  NoConstant(Get_Double_Value("encntr_id"))
+
+Declare Is23Msg = I2 With Public, NoConstant(TRUE)
+
+If (Validate(oen_reply->CONTROL_GROUP [1]->MSH [1]->version->version_id, "Z") != "Z")
+  Set Is23Msg = FALSE  ;; 2.4 or higher
+EndIf
+
+If (Is23Msg = TRUE)
+  If (Size(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 5) = 0)
+    Set stat = Add_Missing_Field("PID 3 (MRN) is EMPTY", DUMP_MSG_YES)
+  Else
+     Set stat = Check_Field_For_Empty(
+          oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id,
+          DUMP_MSG_YES,
+          "PID 3.1 (MRN) is BLANK")
+  EndIf
+  If (MCORF_Encntr_ID > 0)
+    Set stat = Check_Field_For_Empty(
+          oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_account_nbr->id,
+          DUMP_MSG_YES,
+          "PID 18 (FIN) is BLANK")        
+  EndIf
+Else
+  If (Size(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 5) = 0)
+    Set stat = Add_Missing_Field("PID 3 (MRN) is EMPTY", DUMP_MSG_YES)
+  Else
+          Set stat = Check_Field_For_Empty(
+          oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->pat_id,
+          DUMP_MSG_YES,
+          "PID 3.1 (MRN) is BLANK")
+  EndIf
+  If (MCORF_Encntr_ID > 0)
+    Set stat = Check_Field_For_Empty(
+          oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_account_nbr->pat_id,
+          DUMP_MSG_YES,
+          "PID 18 (FIN) is BLANK")
+  EndIf
+EndIf
+
+If (Size(Missing_Field->MF, 5) > 0)
+  ;; something was flaged, send the email
+  Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
+  Set stat = Add_To_Email_List("agagnon@spconinc.com")
+  Set stat = Add_To_Email_List("LTHORNE@CERNER.COM")
+  Declare MsgToSend = VC
+  Set MsgToSend = Build_Msg_To_Send(Is23Msg)
+  For (elCtr = 1 To Size(Email_List->EL, 5))
+    Set stat = Send_Email_Msg(
+                Email_List->EL[elCtr]->To_Address, MsgToSend)
+  EndFor
+  If (Check_4_Dump_Msg(0) = 0)
+    Set oenstatus->ignore = 1
+    Go To EXIT_MOBJ_CHK_OUT_REQ_FIELD
+  EndIf
+EndIf  ;; enthe IF
+;;set stat = uar_kill_me(0)
+#EXIT_MOBJ_CHK_OUT_REQ_FIELD
+execute oencpm_msglog build("End of MOBJ_Chk_Out_Req_Field", char(0))
+
+;;;; SUBs below
+
+Subroutine Check_Field_For_Empty(fieldToCheck, dumpMsg, msgStr)
+  Declare tmpFieldIsEmpty = I2 With Public, 
+    NoConstant(FALSE)
+  If (fieldToCheck = "")
+    Set stat = Add_Missing_Field(msgStr, dumpMsg)
+  EndIf
+  return (tmpFieldIsEmpty)
+End ;; End
+
+;;;; =====================
+
+Subroutine Send_Email_Msg(toEmail, msgToSend)
+  Set stat = UAR_Send_Mail(
+                          NullTerm(toEmail), 
+                          NullTerm(ConCat(Trim(MyEnv), " - Require field missing: ", 
+                                      Trim(EmailDate))),
+                          NullTerm(msgToSend), 
+                          NullTerm(FromEmailAddress), 
+                          5, 
+                          NullTerm("IPM.NOTE"))
+  return (1)
+End ;; Ed
+
+;;;;; =====================
+
+Subroutine Build_Header(isMsg23)
+  Declare tmpHeader = VC
+  Set tmpHeader = ConCat(
+       "CTRL ID-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_ctrl_id->ctrl_id1), FIELD_SEP,
+       "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
+       "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
+       "CLIENT-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->sending_facility->name_id)
+       ;;;;;,FIELD_SEP, "This is just a test!!, disregard!!!"
+   );; End the concat
+  ;; Insert this at the beginning
+  return (tmpHeader)
+End ;; End
+
+;;;; =================
+
+Subroutine Build_Msg_To_Send(is23)
+  Declare tmpMsgToSend = VC
+  Set tmpMsgToSend = Build_Header(is23)
+  For (bfCtr = 1 To Size(Missing_Field->MF, 5))
+    Set tmpMsgToSend = ConCat(
+             Trim(tmPMsgToSend), FIELD_SEP,
+              "        ", Trim(Missing_Field->MF[bfCtr]->FieldName),
+                     FIELD_SEP)
+  EndFor
+  return (tmpMsgToSend)
+End ;; Ed
+
+;;;; =================
+
+Subroutine Check_4_Dump_Msg(junk)
+  Declare tmpShouldDumpMsg = I2 With Public,
+    NoConstant(FALSE)
+  For (mfCtr = 1 To Size(Missing_Field->MF, 5))
+    If (Missing_Field->MF[mfCtr]->ShouldDumpMsg = TRUE)
+      Set tmpShouldDumpMsg = TRUE
+      Set mfCtr = (Size(Missing_Field->MF, 5) + 1)
+    EndIf
+  EndFor
+  return (tmpShouldDumpMsg)
+End  ;; End
+
+;;;; =================
+
+Subroutine Add_Missing_Field(strMsg, dumpMsg)
+  Declare  tmpMFCtr = I2 
+  Set tmpMFCtr = (Size(Missing_Field->MF, 5) + 1)
+  Set stat = AlterList(Missing_Field->MF, tmpMFCtr)
+  Set Missing_Field->MF[tmpMFCtr]->FieldName = strMsg
+  Set Missing_Field->MF[tmpMFCtr]->ShouldDumpMsg = dumpMsg
+  return (Size(Missing_Field->MF, 5))
+End   ;;;; End
+
+;;;; =================
+
+Subroutine Add_To_Email_List(emailToAdd)
+  Declare tmpELCtr = I2
+  Set tmpELCtr = (Size(Email_List->EL, 5) + 1)
+  Set stat = AlterList(Email_List->EL, tmpELCtr)
+  Set Email_List->EL[tmpELCtr]->To_Address = emailToAdd
+  return (Size(Email_List->EL, 5))
+End ;; End
+
+;;;; ==================
+
+Subroutine Get_Double_Value(strMean)
+  Declare tmpDblVal = F8 With Public, NoConstant(0.0)
+  Set strMean = CnvtLower(strMean) 
+  For (dblCtr = 1 to Size(oen_reply->cerner->doublelist, 5))
+     If (CnvtLower(oen_reply->cerner->doublelist[dblCtr]->strmeaning) = strMean)
+       Set tmpDblVal = CnvtReal(oen_reply->cerner->doublelist[dblCtr]->dval)
+       Set dblCtr = (Size(oen_reply->cerner->doublelist, 5) + 1)
+     EndIf
+  EndFor
+  return (tmpDblVal)
+End  ;; End
+
+;;;; END =============
