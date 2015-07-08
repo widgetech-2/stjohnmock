@@ -12,4 +12,7 @@ St John CCL and OE Scripts
 5. MOBJ_Chk_Out_Not_Aliased4
 	Updated version of #2. 
 6. SP_St_John_ESI_Rpt
+	CCL script to create report of ESI Log failures and warnings. Proposed run time
+	is every 5 minutes from Ops. Any records found meeting criteria will be emailed
+	to persons notifying them of the issues.
 7. ReadMe.txt
