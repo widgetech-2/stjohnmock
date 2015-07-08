@@ -1,0 +1,290 @@
+execute oencpm_msglog build("Begin of MOBJ_Chk_Out_Not_Alias", char(0))
+;;;;delare t=f8
+Free Record BadField
+Record BadField
+ (
+   1 BF[*]
+     2 FieldName = VC
+     2 BadValue  = VC
+     2 BadValueDisplay = VC
+     2 BadValueCodeSet = VC
+     2 BadValueCodeSetDisplay = VC
+ )  ;; End
+
+Free Record Email_List
+Record Email_List
+ (
+    1 EL[*]
+       2 To_Address = VC
+ )
+
+Free Record Code_Info
+Record Code_Info
+ (
+   1 CI[*]
+       2 Code_Value = F8
+       2 Code_Display = VC
+       2 Code_Set = F8
+       2 Code_Set_Display = VC
+ )
+
+Declare FIELD_NOT_ALIASED = VC With Public,
+  Constant("CD:")
+Declare TAB = C1 With Public,
+  Constant(Char(9))
+Declare FIELD_SEP = C2 With Public,
+  Constant(ConCat(Char(13), Char(10)))   ;; NL
+
+;;; Will add the values to be emailed to the rec struc
+Declare Add_BadField(fName, bValue) = I2
+Declare Check_Field_For_Value(valueToCheck, fieldToCheck, fName) = I2
+
+;;;; EMAIL variables
+Declare IsMicro = I2 With Public,
+  NoConstant(FALSE)
+Declare IsGenLab = I2 With Public,
+  NoConstant(FALSE)
+
+Declare MyEnv = VC With Public,
+  Constant(CnvtLower(Logical("ENVIRONMENT")))
+Declare EmailDate = VC With Public,
+  Constant(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D"))
+Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
+  Constant("Bryan.McKay@sjmc.org")
+Declare FromEmailAddress = VC With Public,
+  Constant(ConCat("outmissing_", Trim(MyEnv), "@stjohn.org"))
+Declare Send_Email_Msg(toEmail, msgToSend) = I2
+Declare Add_To_Email_List(emailToAdd) = I2
+
+;;;; Misc values to process the message to an email
+Declare NoAliasPDMDTA = I2 With Public,
+  NoConstant(FALSE)
+Declare Msg_Activity_Type = VC
+Declare Msg_Accession_Num = VC
+Declare Build_Header(msgAcc, ordType) = VC
+Declare Get_ORM_Accession(junk) = VC
+Declare Get_ORU_Accession(junk) = VC
+;;;; will concat the bad field rec struc for it to be send in the email
+Declare Build_Msg_To_Send(msgAcc, ordType) = VC
+Declare Get_Code_Info(codeVal) = I2
+
+;;;; Check all different fields, at end check size of rec struc and > 0 then get header and send the email
+;;;; PV1 Segment
+Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->nurse_unit, "PatLocNurseUnit")
+Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->room, "PatLocRoom")
+Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->bed, "PatLocBed")
+Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->facility_id->name_id, "PatLocFacility")
+Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->building, "PatLocBuilding")
+
+If (oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type In("ORR", "ORM"))
+  Set Msg_Accession_Num = Get_ORM_Accession(1)
+  Set Msg_Activity_Type = oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->diag_serv_sec_id 
+  For (ogCtr = 1 To Size(oen_reply->ORDER_GROUP, 5))
+    Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+                 oen_reply->ORDER_GROUP [ogCtr]->OBR_GROUP [1]->OBR->univ_service_id [1]->identifier, "OBR4.1")
+    Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+                 oen_reply->ORDER_GROUP [ogCtr]->OBR_GROUP [1]->OBR->spec_source->spec_name_cd->identifier, "SPEC_SRC")
+    If (oen_reply->ORDER_GROUP [ogCtr]->OBR_GROUP [1]->OBR->ord_provider [1]->id_nbr = "")
+       Set stat = Add_BadField("Order Doc-", "MISSING")
+    EndIf
+    For (obxCtr = 1 To Size(oen_reply->ORDER_GROUP [ogCtr]->OBR_GROUP [1]->OBX_GROUP, 5))
+       Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->ORDER_GROUP [ogCtr]->OBR_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_id->identifier, "OBX3.1")
+    EndFor
+  EndFor
+ElseIf (oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type = "ORU")
+  Set Msg_Accession_NUm = Get_ORU_Accession(1)
+  Set Msg_Activity_Type = oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->diag_serv_sec_id
+  For (rogCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP, 5))
+    Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [rogCtr]->OBR->univ_service_id [1]->identifier, "OBR4.1")
+    Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+             oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [rogCtr]->OBR->spec_source->spec_name_cd->identifier, "SPEC_SRC")
+    For (obxCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [rogCtr]->OBX_GROUP, 5))
+      Set stat = Check_Field_For_Value(FIELD_NOT_ALIASED,
+            oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [rogCtr]->OBX_GROUP [obxCtr]->OBX->observation_id->identifier, "OBX3.1")
+    EndFor
+  EndFor
+EndIf
+
+;; Check 
+If (Size(BadField->BF, 5) > 0)
+  ;; Got something, send the email
+  ;;; add the address to send to here for simplicty and one central location
+  Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
+  Set stat = Add_To_Email_List("agagnon@spconinc.com")
+  If (NoAliasPDMDTA = TRUE)
+    If (Msg_Activity_Type = "MA")  ;; Micro
+      Set stat = Add_To_Email_List("Jessica.Plubell@Cerner.com")
+    ElseIf (Msg_Activity_Type = "LA")  ;; gen lab
+      Set stat = Add_To_Email_List("Michael.Barnes@Cerner.com")
+    EndIf
+  EndIf
+  
+  Declare MsgToSend = VC
+  Set MsgToSend = Build_Msg_To_Send(Msg_Accession_Num, Msg_Activity_Type)
+  For (elCtr = 1 To Size(Email_List->EL, 5))
+    Set stat = Send_Email_Msg(
+                Email_List->EL->To_Address, MsgToSend)
+  EndFor
+EndIf
+;;;;set stat = uar_kill_me(0)
+execute oencpm_msglog build("End of MOBJ_Chk_Out_Not_Alias", char(0))
+
+;;;; Subs below
+
+Subroutine Check_Field_For_Value(valueToCheck, fieldToCheck, fName)
+  Declare tmpFndValue = I2 With Public, NoConstant (FALSE)
+  If (FindString(valueToCheck, fieldToCheck) > 0)
+     ;;;; found a bad value so add it to the rec struc
+     If (fName In("OBR4.1", "OBX3.1"))
+       Set NoAliasPDMDTA = TRUE
+     EndIf
+     Set stat = Add_BadField(fName, fieldToCheck)
+  EndIf
+  return (Size(BadField->BF, 5))
+End ;; End
+
+;;;; ==============
+
+Subroutine Add_BadField(fname, bValue)
+  Declare bfTmpCtr = I2
+  Set bfTmpCtr = (Size(BadField->BF, 5) + 1)
+  Set stat     = AlterList(BadField->BF, bfTmpCtr)
+  Set BadField->BF[bfTmpCtr]->FieldName = fName
+  Set BadField->BF[bfTmpCtr]->BadValue  = bValue
+  If (FindString(FIELD_NOT_ALIASED, bValue) > 0) 
+    Declare tmpVal = VC
+    Declare tmpCodeValue = F8
+    Set tmpVal = Replace(bValue, FIELD_NOT_ALIASED, "")
+    Set tmpCodeValue = CnvtReal(tmpVal)
+    If (Get_Code_Info(tmpCodeValue) > 0)
+      Set BadField->BF[bfTmpCtr]->BadValueDisplay = 
+                Code_Info->CI[1]->Code_Display
+      Set BadField->BF[bfTmpCtr]->BadValueCodeSet = 
+                CnvtString(Code_Info->CI[1]->Code_Set)
+       Set BadField->BF[bfTmpCtr]->BadValueCodeSetDisplay =
+                Code_Info->CI[1]->Code_Set_Display
+    EndIf
+  EndIf
+  return (Size(BadField->BF, 5))
+End ;; Ed
+
+;;;; ====================
+
+Subroutine Get_Code_Info(codeVal)
+  Set stat = AlterList(Code_Info->CI, 0)
+  Select Into "nl:"
+    cv. code_value,
+    cv.display,
+    cv.code_set,
+    cvs.display
+  From code_value cv,
+              code_value_set cvs
+  Plan cv
+    Where cv.code_value = codeVal
+   Join cvs
+     Where cvs.code_set = cv.code_set
+  Detail
+    stat = AlterList(Code_Info->CI, 1)
+    Code_Info->CI[1]->Code_Value = cv.code_value
+    Code_Info->CI[1]->Code_Display = cv.display
+    Code_Info->CI[1]->Code_Set = cv.code_set
+    Code_Info->CI[1]->Code_Set_Display = cvs.display
+  With MaxRec = 1
+  return (Size(Code_Info->CI, 5))
+End 
+
+;;;; ====================
+
+Subroutine Send_Email_Msg(toEmail, msgToSend)
+  Set stat = UAR_Send_Mail(
+                          NullTerm(toEmail), 
+                          NullTerm(ConCat(Trim(MyEnv), " - Msg missing aliasing: ", 
+                                      Trim(EmailDate))),
+                          NullTerm(msgToSend), 
+                          NullTerm(FromEmailAddress), 
+                          5, 
+                          NullTerm("IPM.NOTE"))
+  return (1)
+End ;; Ed
+
+;;;;; =====================
+
+Subroutine Build_Header(msgAcc, ordType)
+  Declare tmpHeader = VC
+  Set tmpHeader = ConCat(
+       "CTRL ID-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_ctrl_id->ctrl_id1), FIELD_SEP,
+       "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
+       "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
+       "MRN-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id), FIELD_SEP,
+       "CLIENT-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->
+                            assign_auth->name_id), FIELD_SEP,
+       "ACC-", Trim(msgAcc), FIELD_SEP,
+       "ACTIVITY_TYPE-", Trim(ordType)
+   );; End the concat
+  ;; Insert this at the beginning
+  return (tmpHeader)
+End ;; End
+
+;;;; ===========
+
+Subroutine Get_ORM_Accession(ogIndex)
+  Declare tmpAcc = VC
+  For (ctr = 1 To Size(oen_reply->ORDER_GROUP [ogIndex]->OBR_GROUP [1]->OBR->filler_field1, 5))
+    If (oen_reply->ORDER_GROUP [1]->OBR_GROUP [ogIndex]->OBR->filler_field1 [ctr]->field_type = "HNA_ACCN")
+      Set tmpAcc = oen_reply->ORDER_GROUP [ogIndex]->OBR_GROUP [1]->OBR->filler_field1 [ctr]->value
+      Set ctr = (Size(oen_reply->ORDER_GROUP [ogIndex]->OBR_GROUP [1]->OBR->filler_field1, 5) + 1)
+    EndIf
+  EndFor
+  return (tmpAcc)
+End  ;; End
+
+;;;; ============
+
+Subroutine Get_ORU_Accession(resIndex)
+  Declare tmpAcc = VC
+  For (ctr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBR->filler_field1, 5))
+    If (oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBR->filler_field1 [1]->
+                                                field_type = "HNA_ACCN")
+      Set tmpAcc = oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBR->filler_field1 [1]->value
+      Set ctr = (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBR->filler_field1, 5) + 1)
+    EndIf
+  EndFor
+  return (tmpAcc)
+End  ;;   End
+
+;;;; ==============
+
+Subroutine Add_To_Email_List(emailToAdd)
+  Declare tmpELCtr = I2
+  Set tmpELCtr = (Size(Email_List->EL, 5) + 1)
+  Set stat = AlterList(Email_List->EL, tmpELCtr)
+  Set Email_List->EL[tmpELCtr]->To_Address = emailToAdd
+  return (Size(Email_List->EL, 5))
+End ;; End
+
+;;;; ==============
+
+Subroutine Build_Msg_To_Send(msgAcc, ordType)
+  Declare tmpMsgToSend = VC
+  Set tmpMsgToSend = Build_Header(Msg_Accession_Num, Msg_Activity_Type)
+  For (bfCtr = 1 To Size(BadField->BF, 5))
+    Set tmpMsgToSend = ConCat(
+             Trim(tmPMsgToSend), FIELD_SEP,
+              Trim(BadField->BF[bfCtr]->FieldName), "-",
+                    Trim(BadField->BF[bfCtr]->BadValue), FIELD_SEP,
+                    "      ", "CVDisplay-", Trim(BadField->BF[bfCtr]->BadValueDisplay), FIELD_SEP, 
+                    "      ", "CodeSet-", Trim(BadField->BF[bfCtr]->BadValueCodeSet), FIELD_SEP,
+                    "      ", "CodeSetDisplay-", Trim(BadField->BF[bfCtr]->BadValueCodeSetDisplay),
+                     FIELD_SEP)
+  EndFor
+  return (tmpMsgToSend)
+End ;; Ed
+
+;;;; END

@@ -1,0 +1,289 @@
+execute oencpm_msglog build("Begin fo MOBJ_Chk_Not_Aliased", char(0))
+
+Declare FoundMissing = I2 With Public, NoConstant(FALSE)
+Declare MsgAccession = VC
+Declare PatLocString = VC
+Declare PDMString = VC
+Declare DTAString = VC
+
+Declare DCLStatus = F8
+Declare MyMsg = VC
+Declare docID = VC
+Declare FIELD_SEP = C2
+Set FIELD_SEP = ConCat(Char(13), Char(10))   ;; NL
+
+Declare MyEnv = VC With Public,
+  Constant(CnvtLower(Logical("ENVIRONMENT")))
+Declare EmailDate = VC With Public,
+  Constant(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D"))
+Set fromAdd = ConCat("outmissing_", Trim(MyEnv), "@stjohn.org")
+Declare FromEmailAddress = VC With Public,
+  Constant(ConCat("outmissing2_", Trim(MyEnv), "@stjohn.org"))
+
+Declare Check_ORM_OBR_Missing(junk) = I2
+Declare Check_ORU_OBR_Missing(junk) = I2
+
+Declare Check_ORM_Order_Doc(junk)      = I2
+Declare Check_ORU_Order_Doc(junk)      = I2
+
+Declare Check_ORM_OBX_Missing(obxIndex) = I2
+Declare Check_ORU_OBX_Missing(obxIndex) = I2
+Declare Check_ORU_OBX_MA_Missing(obxIndex) = I2
+
+Declare Get_ORM_Accession(junk) = VC
+Declare Get_ORU_Accession(junk) = VC
+
+Declare Send_Email_Msg(toEmail, msgToSend) = I2
+
+If ((FindString("CD:", oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->nurse_unit) > 0) OR
+    (FindString("CD:", oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->room) > 0) OR
+    (FindString("CD:", oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->bed) > 0) OR
+    (FindString("CD:", oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->facility_id->name_id) > 0) OR
+    (FindString("CD:", oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->building) > 0)
+    )  ;; end the IF parens
+  Set PatLocString = ConCat(
+                Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->nurse_unit), "^",
+                Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->room), "^",
+                Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->bed), "^",
+                Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->facility_id->name_id), "^^^",
+                Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PV1 [1]->assigned_pat_loc->building)
+                )  ;; end the concat                
+Else
+  Set PatLocString = ""
+EndIf
+
+If (oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type In("ORR", "ORM"))
+  If (Check_ORM_OBR_Missing(0) = TRUE)
+      If (oen_reply->ORDER_GROUP [1]->ORC [1]->ord_provider [1]->id_nbr = "")
+        Set docID = "DocID Is Missing"
+      Else
+         Set docID = oen_reply->ORDER_GROUP [1]->ORC [1]->ord_provider [1]->id_nbr
+      EndIf
+      Set docID = ConCat(
+                  Trim(docID), "^",
+                  Trim(oen_reply->ORDER_GROUP [1]->ORC [1]->ord_provider [1]->last_name), "^",
+                  Trim(oen_reply->ORDER_GROUP [1]->ORC [1]->ord_provider [1]->first_name)
+                  )
+      Set FoundMissing = TRUE
+      Set MsgAccession = Get_ORM_Accession(0) 
+      Set PDMString = ConCat(
+                        Trim(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->univ_service_id [1]->identifier), "^",
+                        Trim(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->univ_service_id [1]->text), FIELD_SEP,
+                         "SpecSrc:", 
+                               Trim(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->spec_source->spec_name_cd->identifier),
+                                      FIELD_SEP,
+                         "DocID:", Trim(docID)
+                         )  ;; End the concat
+      If (oen_reply->ORDER_GROUP [1]->ORC [1]->order_ctrl = "CA")  ;; cancel
+        If (FindString("CD:", oen_reply->ORDER_GROUP [1]->ORC [1]->ord_ctrl_rsn_cd->identifier) > 0)
+          Set PDMString = ConCat(
+                     Trim(PDMString), FIELD_SEP,
+                     "Cancel Reason-", 
+                             Trim(oen_reply->ORDER_GROUP [1]->ORC [1]->ord_ctrl_rsn_cd->identifier)
+                  )  ;; End the ConCat
+        EndIf
+      EndIf
+      For (obxCtr = 1 To Size(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBX_GROUP, 5))
+        If (Check_ORM_OBX_Missing(obxCtr) = TRUE)
+           Set DTAString =  ConCat(
+                   Trim(DTAString), FIELD_SEP,
+                   Trim(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_id->identifier), "^",
+                   Trim(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBX_GROUP [1]->OBX->observation_id->text)
+                 )  ;; End the concat
+        EndIf
+      EndFor
+  EndIf  ;; End the check orm obr missing if
+ElseIf (oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type = "ORU")
+  Set FoundMissing = Check_ORU_OBR_Missing(0)
+  If (FoundMissing = FALSE)  ;; check OBX's
+    For (obxCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBX_GROUP, 5))
+      If (Check_ORU_OBX_Missing(obxCtr) = TRUE)
+        Set FoundMissing = TRUE
+        Set obxCtr = (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBX_GROUP, 5) + 1)
+      EndIf
+    EndFor
+  EndIf
+  If (FoundMissing = TRUE)
+    If (oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->ord_provider [1]->id_nbr = "")
+      Set docID = "DocID is Missing"
+    Else
+       Set docID = oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->ord_provider [1]->id_nbr
+    EndIf
+    Set DocID = ConCat(
+                Trim(docID), "^",
+                Trim(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->ORC [1]->ord_provider [1]->last_name->last_name), "^",
+                Trim(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->ORC [1]->ord_provider [1]->first_name)
+                )
+    
+    Set MsgAccession = Get_ORU_Accession(0)  
+    Set PDMString = ConCat(
+        Trim(oen_reply->RES_ORU_GROUP [1]->OBR [1]->univ_service_id [1]->identifier), "^",
+        Trim(oen_reply->RES_ORU_GROUP [1]->OBR [1]->univ_service_id [1]->text), FIELD_SEP,
+         "SpecSrc:",
+             Trim(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->spec_source->spec_name_cd->identifier), FIELD_SEP,
+         "DocID:",
+             Trim(DocID)
+           ) ;; End
+    For (obxCtr = 1 To Size(oen_reply->RES_ORU_GROUP [1]->OBX_GROUP, 5))
+      Set DTAString = ConCat(
+                 Trim(DTAString), FIELD_SEP,
+                 Trim(oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_id->identifier), "^",
+                 Trim(oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_id->text), FIELD_SEP)
+       If (oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_id->identifier = "ORGANISM")
+         Set DTAString = ConCat(
+                 Trim(DTAString), "^",
+                  "OBX Value: ", 
+                 Trim(oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [obxCtr]->OBX->observation_value [1]->value_1)
+                  )  ;; End the concat
+       EndIf
+    EndFor
+  EndIf
+EndIf
+
+If (FoundMissing = TRUE)
+  Set MyMsg = ConCat(
+       "CTRL ID-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_ctrl_id->ctrl_id1), FIELD_SEP,
+       "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
+       "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
+       "MRN-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id), FIELD_SEP,
+       "CLIENT-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->
+                            assign_auth->name_id), FIELD_SEP,
+       "ACC-", Trim(MSGAccession), FIELD_SEP, 
+       "LOCATION-", Trim(PatLocString), FIELD_SEP, 
+       "PDMString-", Trim(PDMString), FIELD_SEP,
+       "DTAString-", Trim(DTAString), FIELD_SEP
+                                             )  ;; End the concat
+
+  
+;;Set stat = Send_Email_Msg("Bryan.McKay@sjmc.org", MyMsg)
+Set stat = Send_Email_Msg("agagnon@spconinc.com", MyMsg)
+;;Set stat = Send_Email_Msg("sriley@spconinc.com", MyMsg)
+
+
+/****/
+  Set stat = UAR_Send_Mail(
+                          NullTerm("Bryan.McKay@sjmc.org"), 
+                          NullTerm(ConCat(Trim(MyEnv), " - Msg missing aliasing: ", 
+                                      Trim(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D")))),
+                          NullTerm(MyMsg), 
+                          NullTerm(fromAdd), 5, nullterm("IPM.NOTE"))
+
+Set stat = UAR_Send_Mail(
+                          NullTerm("agagnon@spconinc.com"), 
+                          NullTerm(ConCat(Trim(MyEnv), " - Msg missing aliasing: ", 
+                                      Trim(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D")))),
+                          NullTerm(MyMsg), 
+                          NullTerm(fromAdd), 5, nullterm("IPM.NOTE"))
+/*****/
+
+set stat = uar_kill_me(0)
+EndIf
+
+execute oencpm_msglog build("End fo MOBJ_Chk_Not_Aliased", char(0))
+
+;;;; ====================
+
+Subroutine Send_Email_Msg(toEmail, msgToSend)
+execute oencpm_msglog build("To Email:", toEmail, char(0))
+execute oencpm_msglog build("Msg:", msgToSend, char(0))
+  Set stat = UAR_Send_Mail(
+                          NullTerm(toEmail), 
+                          NullTerm(ConCat(Trim(MyEnv), " - Msg missing aliasing: ", 
+                                      Trim(EmailDate))),
+                          NullTerm(msgToSend), 
+                          NullTerm(FromEmailAddress), 
+                          5, 
+                          NullTerm("IPM.NOTE"))
+  return (1)
+End ;; Ed
+
+;;;; ====================
+
+Subroutine Get_ORM_Accession(junk)
+  Declare tmpAcc = VC
+  For (ctr = 1 To Size(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->filler_field1, 5))
+    If (oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->filler_field1 [ctr]->field_type = "HNA_ACCN")
+      Set tmpAcc = oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->filler_field1 [ctr]->value
+      Set ctr = (Size(oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->filler_field1, 5) + 1)
+    EndIf
+  EndFor
+  return (tmpAcc)
+End  ;; End
+
+;;;; ============
+
+Subroutine Get_ORU_Accession(junk)
+  Declare tmpAcc = VC
+  For (ctr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->filler_field1, 5))
+    If (oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->filler_field1 [1]->field_type = "HNA_ACCN")
+      Set tmpAcc = oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->filler_field1 [1]->value
+      Set ctr = (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->filler_field1, 5) + 1)
+    EndIf
+  EndFor
+  return (tmpAcc)
+End
+
+;;;; ====================
+
+Subroutine Check_ORM_OBX_Missing(obxIndex)
+  Declare tmpFndMissing = I2 With Public, NoConstant(FALSE)
+  If (FindString("CD:", 
+        oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBX_GROUP [obxIndex]->OBX->observation_id->identifier) > 0)
+    Set tmpFndMissing = TRUE
+  EndIf
+  return (tmpFndMissing)
+End ;; End
+
+;;;; ====================
+
+Subroutine Check_ORU_OBX_Missing(obxIndex)
+  Declare tmpFndMissing = I2 With Public, NoConstant(FALSE)
+  Declare tmpDTA = VC
+  Declare tmpAltDTA = VC
+  Set tmpDTA = oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [obxIndex]->OBX->observation_id->identifier
+  If (tmpDTA != "ORGANISM")
+    If ((tmpDTA = "") OR
+        (FindString("CD:", tmpDTA) > 0))
+      Set tmpFndMissing = TRUE
+    EndIf  ;; Endhte tmpDTA = "" IF
+  Else
+     Declare tmpVal = VC
+     Set tmpVal = oen_reply->RES_ORU_GROUP [1]->OBX_GROUP [1]->OBX->observation_value [obxIndex]->value_1 
+     If (FindString("CD:", tmpVal) > 0)
+       Set tmpFndMissing = TRUE
+     EndIf
+  EndIf   ;; End the tmpDTA != ORGANISM IF
+  return (tmpFndMissing)
+End
+
+;;;; ===================
+
+Subroutine Check_ORU_OBR_Missing(junk)
+  Declare tmpFndMissing = I2 With Public, NoConstant(FALSE)
+  If ((oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->ord_provider [1]->id_nbr = "") OR
+      (FindString("CD:", oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->spec_source->spec_name_cd->identifier) > 0) OR
+      (FindString("CD:", oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->univ_service_id [1]->identifier) > 0))
+    Set tmpFndMissing = TRUE
+  EndIf
+  return (tmpFndMissing)
+End ;; End
+
+;;;; ==============
+
+Subroutine Check_ORM_OBR_Missing(junk)
+  Declare tmpFndMissing = I2 With Public, NoConstant(FALSE)
+  If ((oen_reply->ORDER_GROUP [1]->ORC [1]->ord_provider [1]->id_nbr = "") OR
+      (FindString("CD:", oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->univ_service_id [1]->identifier) > 0) OR
+      (FindString("CD:", oen_reply->ORDER_GROUP [1]->OBR_GROUP [1]->OBR->spec_source->spec_name_cd->identifier) > 0))
+    Set tmpFndMissing = TRUE
+  EndIf
+  return (tmpFndMissing)
+End ;; End
+
+;;;; ==============
+
+Subroutine Get_Environment(junk)
+  return (CnvtUpper(Logical("ENVIRONMENT")))
+End ;; En"
+
+;;;; ==============

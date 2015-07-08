@@ -1,0 +1,129 @@
+execute oencpm_msglog build("Begin of MOBJ_AP_Fmt_Fix", char(0))
+;;delare t=f8
+/**************
+  AG - 5/05/2015 - 
+  Script will remove blank lines from the AP charted report
+  Will also remove duplicate header lines
+  Script will do this in seperate steps to keep things clear on what it doing
+ ***************/
+
+Free Record OBX_Value
+Record OBX_Value
+ (
+    1 OV[*]
+       2 Value = VC
+ )  ;; End
+
+If (oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_trigger != "R03")
+  Go To END_MOBJ_AP_FMT_FIX
+ElseIf (oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [1]->OBR->diag_serv_sec_id  != "AP")
+  Go To END_MOBJ_AP_FMT_FIX
+EndIf
+
+Declare OBXCtr = I2
+Declare OBXSize = I2
+
+Declare Get_Header_Rows(resIndex) = I2
+Declare Search_for_Duplicate(msgValue) = I2
+Declare Remove_Header_Rows(resIndex) = I2
+
+;;;; Step 1, get rid of blank lines
+;;;; Should only be 1 ORC/OBR but just in case
+execute oencpm_msglog build("Dump the blank lines", char(0))
+For (resCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP, 5))
+  Set OBXCtr   = 1 
+  Set OBXSize = Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP, 5)
+  While (OBXCtr <= OBXSize)
+    If (oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP [OBXCtr]->OBX->
+                    observation_value [1]->value_1  = "")
+      Set stat = AlterList(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP,
+                (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP, 5) - 1),
+                (OBXCtr - 1))
+      Set OBXSize = Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP, 5)
+      Set OBXCtr = OBXCtr - 1
+    EndIf
+    Set OBXCtr = OBXCtr + 1
+  EndWhile   ;; End the obxCtr WHILE
+EndFor  ;; End the resCtr FOR
+
+;;;; Step 2, identify header rows and then get rid of them
+execute oencpm_msglog build("Dump the header lines", char(0))
+For (resCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP, 5))
+  If (Get_Header_Rows(resCtr) > 0)
+    Set stat = Remove_Header_Rows(resCtr)
+  EndIf  ;; end the get header rows IF
+  For (obxCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP, 5))
+    Set oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resCtr]->OBX_GROUP [obxCtr]->OBX->set_id = 
+                     CnvtString(obxCtr)
+  EndFor  ;; End the obxCtr FOR
+EndFor  ;; End hte resCtr FOR
+
+#END_MOBJ_AP_FMT_FIX
+execute oencpm_msglog build("End of MOBJ_AP_Fmt_Fix", char(0))
+
+;;;; Subs below
+
+Subroutine Get_Header_Rows(resIndex)
+  execute oencpm_msglog build("Begin Get_Header_Rows", char(0))
+  Set stat = AlterList(OBX_Value->OV, 0)
+  Declare getOneMore = I2 With Public, NoConstant(FALSE)
+  For (obxCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5))
+    Set stat = AlterList(OBX_Value->OV, obxCtr)
+    Set OBX_Value->OV[obxCtr]->Value = 
+           oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP [obxCtr]->OBX->
+                     observation_value [1]->value_1
+    If (FindString("Accession Number", OBX_Value->OV[obxCtr]->Value) = 1)
+      Set getOneMore = TRUE
+      ;;;; want one more record after this flag
+    ElseIf (getOneMore = TRUE)
+      ;;;; Last one to get, exit the loop
+      Set obxCtr = (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5) + 1)
+    EndIf
+  EndFor
+  ;;;; Something is wrong, we did NOT get the header
+  If (Size(OBX_Value->OV, 5) = Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5))
+    Set stat = AlterList(OBX_Value->OV, 0)
+  EndIf
+  execute oencpm_msglog build("End Get_Header_Rows", char(0))
+  return (Size(OBX_Value->OV, 5))
+End ;; End the sub
+
+;;;; ==============
+
+Subroutine Remove_Header_Rows(resIndex)
+  execute oencpm_msglog build("Begin Remove_Header_Rows", char(0))
+  Declare obxStartPos = I2
+  ;;;; skip over the first set of header records
+  Set obxStartPos = (Size(OBX_Value->OV, 5) + 1)
+  Set OBXSize = Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5)
+  While (obxStartPos <= OBXSize)
+    If (Search_for_Duplicate(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP[obxStartPos]->
+                   OBX->observation_value [1]->value_1) = TRUE)
+      Set stat = AlterList(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP,
+              (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5) - 1),
+              (obxStartPos - 1))
+      Set OBXSize = Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5)
+      Set obxStartPos = obxStartPos - 1
+    EndIf
+    Set obxStartPos = obxStartPos + 1
+  EndWhile
+  execute oencpm_msglog build("End Remove_Header_Rows", char(0))
+  return (Size(oen_reply->PERSON_GROUP [1]->RES_ORU_GROUP [resIndex]->OBX_GROUP, 5))
+End ;; End the sub
+
+;;;; ===============
+
+Subroutine Search_for_Duplicate(msgValue)
+  execute oencpm_msglog build("Begin Search for duplicate", char(0))
+  Declare fndDup = I2 With Public, NoConstant(FALSE)
+  For (ovCtr = 1 To Size(OBX_Value->OV, 5))
+    If (OBX_Value->OV[ovCtr]->Value = msgValue)
+      Set fndDup = TRUE
+      Set ovCtr = (Size(OBX_Value->OV, 5) + 1)
+    EndIf
+  EndFor  ;; end the ovCtr FOR
+  execute oencpm_msglog build("End Search for duplicate", char(0))
+  return (fndDup)
+End ;; End
+
+;;;; End the SUBS
