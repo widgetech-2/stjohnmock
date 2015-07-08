@@ -50,15 +50,23 @@ Record Query_Filter
      2 Filter = VC
  )  ;; End
  
-;; common errors and the causes/fixes 
+;; common errors and the causes/fixes
 Free Record Common_Errors
 Record Common_Errors
  (
    1 CE[*]
      2 Error_String = VC
      2 Possible_Cause = VC
- )  ;; End 
+ )  ;; End
  
+Free Record Email_List
+Record Email_List
+ (
+    1 EL[*]
+       2 To_Address = VC
+ )
+Declare Add_To_Email_List(emailToAdd) = I2
+
 Declare REPLACE_HOLD_VALUE = VC With Public,
   Constant("##_REPLACE_##")
 Declare RUN_FIRST_INDEX = I2 With Public,
@@ -90,7 +98,7 @@ Set Logical N Value(Set_Dir)
 ;;;; Email information
 Declare FromDefaultEmail = VC With Public,
   Constant(ConCat("esi_fail_", trim(MyEnv), "@stjohn.org"))
-Declare ToDefaultEmail = VC With Public,
+Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
   Constant("agagnon@spconinc.com")
  
 ;;;; Script query information
@@ -145,7 +153,7 @@ Declare Write_Log_Msg(descrip, msg) = I2
 ;;;; Misc
 Declare Get_Parse(Seg, Pos, msg) = VC
 Declare Get_In_Msg(txKey) = VC
-
+ 
 ;;;; Loading of common errors
 Declare Load_Common_Errors(junk) = I2
 Declare Add_Common_Errors(errStr, fixStr) = I2
@@ -156,9 +164,9 @@ Declare Find_Common_Error(esiError, defaultFix) = VC
   if file not found the default in data so query is ran for past 5 minutes
  ***********/
  
-Set stat = write_log_msg("get start point:", "begin")
+;;;Set stat = write_log_msg("get start point:", "begin")
 Set stat = Get_Start_Point(0)
-Set stat = write_log_msg("get start point:", "END")
+;;Set stat = write_log_msg("get start point:", "END")
 ;;go to EXIT_SP_ST_JOHN_ESI_RPT
  
 If ((Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID = INITIAL_LAST_ESI_LOG_ID) AND
@@ -178,9 +186,11 @@ Else
                  )  ;; end the replace
 EndIf
  
-Set stat = Load_Common_Errors(0) 
+Set stat = Load_Common_Errors(0)
 Set stat = Run_ESI_Log_Rpt(Where_Filter_Index)
-
+ 
+Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
+Set stat = Add_To_Email_List("agagnon@spconinc.com") 
  
 For (esiCtr = 1 To Size(ESI_Log->EL, 5))
   Declare MsgToSend = VC
@@ -193,7 +203,10 @@ For (esiCtr = 1 To Size(ESI_Log->EL, 5))
   Set MsgFIN    = Get_Parse("PID|", 18, OrgMsg)
   Set MsgCtrl   = Get_Parse("MSH|", 9, OrgMsg)
   Set MsgToSend = Build_Email_Msg(esiCtr, MsgMRN, MsgFIN, MsgCtrl)
-  Set stat = Send_Email_Notification(MsgToSend, ToDefaultEmail)
+  For (elCtr = To Size(Email_List->EL, 5))
+    Set stat = Send_Email_Notification(MsgToSend, 
+                Email_List->EL[elCtr]->To_Address)
+  EndFor
 EndFor
  
 ;;;; show the script has stopped and where to pick back up on
@@ -233,8 +246,8 @@ End ;; End
 Subroutine Build_Email_Msg(esiIndex, tmpMRN, tmpFIN, tmpCtrl)
   Declare tmpLine = VC
   Declare tmpFixStr = VC
-  
-  Set tmpFixStr = 
+ 
+  Set tmpFixStr =
      Find_Common_Error(ESI_Log->EL[esiIndex]->ESI_Error_Text, "UNKNOWN")
   Set tmpLine = ConCat(
     "Person ID:",
@@ -262,14 +275,14 @@ Subroutine Build_Email_Msg(esiIndex, tmpMRN, tmpFIN, tmpCtrl)
   )  ;; End the concat
   return (tmpLine)
 End ;; End
-
+ 
 ;;;; ================
-
+ 
 Subroutine Find_Common_Error(errError, defaultFix)
-  Declare tmpFCDIndex = I2 With Public, NoConstant(0)  
+  Declare tmpFCDIndex = I2 With Public, NoConstant(0)
   Declare possibleFix = VC
   Set errError = CnvtUpper(errError)
-  
+ 
   For (fcdCtr = 1 To Size(Common_Errors->CE, 5))
     ;;Set stat = Write_Log_Msg("ESI Error:", errError)
     ;;set stat = write_log_msg("Common err:", Common_Errors->CE[fcdCtr]->Error_String)
@@ -280,16 +293,16 @@ Subroutine Find_Common_Error(errError, defaultFix)
       Set fcdCtr = (Size(Common_Errors->CE, 5) + 1)
     EndIf
   EndFor
-  
+ 
   If (tmpFCDIndex > 0)
     Set possibleFix = Common_Errors->CE[tmpFCDIndex]->Possible_Cause
   Else
     Set possibleFix = defaultFix
   EndIf
-  
+ 
   return (possibleFix)
 End ;; End
-
+ 
 ;;;; ================
  
 Subroutine Run_ESI_Log_Rpt(whenRunIndex)
@@ -452,12 +465,12 @@ Subroutine Get_Parse(Seg, Pos, msg)
   EndIf
   return (Value)
 End ;; End
-
+ 
 ;;;; ===================
-
+ 
 Subroutine Load_Common_Errors(junk)
   Set stat = Add_Common_Errors(
-     "Error retrieving order catalog code value for alias:", 
+     "Error retrieving order catalog code value for alias:",
      "Value is probably not aliased on cs 200")  ;1
   Set stat = Add_Common_Errors(
      "Unable to retrieve activity_type_flag from order_catalog table for catalog_cd",
@@ -473,20 +486,30 @@ Subroutine Load_Common_Errors(junk)
      "OBR 4.1 is not aliased inbound or value in ORC 1 is not aliased")  ;;5
   return (Size(Common_Errors->CE, 5))
 End  ;; end
-
+ 
 ;;;; ============
-
+ 
 Subroutine Add_Common_Errors(errStr, fixStr)
   Declare tmpCECtr = I2
   Set tmpCECtr = (Size(Common_Errors->CE, 5) + 1)
   Set stat     = AlterList(Common_Errors->CE, tmpCECtr)
-  Set Common_Errors->CE[tmpCECtr]->Error_String = 
+  Set Common_Errors->CE[tmpCECtr]->Error_String =
        CnvtUpper(errStr)
-  Set Common_Errors->CE[tmpCECtr]->Possible_Cause = 
+  Set Common_Errors->CE[tmpCECtr]->Possible_Cause =
        CnvtUpper(fixStr)
   return (Size(Common_Errors->CE, 5))
 End ;; End
+ 
+;;;; ===================
 
+Subroutine Add_To_Email_List(emailToAdd)
+  Declare tmpELCtr = I2
+  Set tmpELCtr = (Size(Email_List->EL, 5) + 1)
+  Set stat = AlterList(Email_List->EL, tmpELCtr)
+  Set Email_List->EL[tmpELCtr]->To_Address = emailToAdd
+  return (Size(Email_List->EL, 5))
+End ;; End
+ 
  
 ;;;; ======= END =======
  
