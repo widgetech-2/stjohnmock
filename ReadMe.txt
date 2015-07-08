@@ -16,3 +16,6 @@ St John CCL and OE Scripts
 	is every 5 minutes from Ops. Any records found meeting criteria will be emailed
 	to persons notifying them of the issues.
 7. ReadMe.txt
+8. MOBJ_Chk_Out_Req_Field
+	Script will check fields for a value and if empty will send a notificaion and
+	possible dump the message
