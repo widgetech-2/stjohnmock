@@ -19,3 +19,5 @@ St John CCL and OE Scripts
 8. MOBJ_Chk_Out_Req_Field
 	Script will check fields for a value and if empty will send a notificaion and
 	possible dump the message
+9. SP_TIME_TEST.PRG
+	testing script for OEN_TXLOG key breakdown and how to format to query

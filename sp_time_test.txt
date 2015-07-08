@@ -1,0 +1,52 @@
+drop program sp_time_test go
+create program sp_time_test
+ 
+;;;; %i /cerner/d_m22/ccluserdir/sp_time_test.prg
+;;;; sp_time_test go
+ 
+Declare Beg_Date = VC
+Declare End_Date = VC
+Declare Beg_Time = VC
+Declare End_Time = VC
+Declare SDString = VC
+Declare EDString = VC
+Declare InterfaceID = VC
+ 
+Set InterfaceID = "1026"
+Set Beg_Date = Format((CURDATE - 1), "MM/DD/YYYY;;D")
+Set End_Date = Beg_Date
+Set Beg_Time = "00:00:01"
+Set End_Time = "23:59:59"
+ 
+SET SDSTRING  =  CNVTSTRING(CNVTDATE2(Beg_Date, "MM/DD/YYYY"), 5, 0, R)
+SET EDSTRING  =  CNVTSTRING(CNVTDATE2(End_Date, "MM/DD/YYYY"), 5, 0, R)
+SET TTIME  =  CONCAT(SUBSTRING(1, 2, BEG_TIME), SUBSTRING(4, 2, BEG_TIME))
+SET TITIME = (CNVTMIN(CNVTINT(TTIME)) * 60 +
+                   CNVTINT(SUBSTRING(7, 2, BEG_TIME))) * 100
+ 
+SET STSTRING = CNVTSTRING(TITIME, 7, 0, R)
+SET TTIME    = CONCAT(SUBSTRING(1, 2, END_TIME), SUBSTRING(4, 2, END_TIME))
+SET TITIME   = (CNVTMIN(CNVTINT(TTIME)) * 60 +
+                  CNVTINT(SUBSTRING(7, 2,  END_TIME ))) * 100
+SET ETSTRING = CNVTSTRING(TITIME, 7, 0, R)
+ 
+SET SSTRING  = CONCAT(" ", CNVTSTRING(INTERFACEID, 4, 0, R), SDSTRING,
+      STSTRING, "*")
+SET ESTRING  = CONCAT(" ", CNVTSTRING(INTERFACEID, 4, 0, R), EDSTRING,
+      ETSTRING, "*")
+call echo(Build("Beg Date:", beg_date, char(0)))
+call echo(build("SSTring:", sstring, char(0)))
+call echo(build("EString:", estring, char(0)))
+Set Beg_Val = SSTring
+Set End_Val = EString
+ 
+select count(*)
+from oen_txlog
+where ((tx_key >= Beg_Val) AND
+       (tx_key <= End_Val))
+With time=90
+ 
+ 
+end
+go
+ 
