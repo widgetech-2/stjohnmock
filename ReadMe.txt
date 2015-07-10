@@ -21,3 +21,4 @@ St John CCL and OE Scripts
 	possible dump the message
 9. SP_TIME_TEST.PRG
 	testing script for OEN_TXLOG key breakdown and how to format to query
+Making a change
