@@ -1,6 +1,6 @@
 drop program sp_out_unaliased_daily_rpt go
 create program sp_out_unaliased_daily_rpt
-  
+ 
 /*****************
   Script will check the OEN_TXLOG table for all outbound messages for the prior
   day to check for CD:<num>. If found will keep a running total for the day. At
@@ -15,9 +15,9 @@ create program sp_out_unaliased_daily_rpt
   At this time query OEN_PROCINFO joining to OEN_PERSONALITY where OPI.service = OUTBOUND and
   OP.PACKESO > 0  this is not the best way, but should do for now
  *****************/
-
+ 
 ;;;; %i /cerner/d_m22/ccluserdir/sp_out_unaliased_daily_rpt.prg go
-;;;; sp_out_unaliased_daily_report go
+;;;; sp_out_unaliased_daily_rpt go
  
 Free Record Out_Interfaces
 Record Out_Interfaces
@@ -45,6 +45,34 @@ Record Query_Date
      2 End_Key   = VC
  ) ;; End
  
+Free Record Msg_CD
+Record Msg_CD
+ (
+   1 MC[*]
+     2 CD_Value = VC
+ )
+ 
+Free Record Not_Aliased
+Record Not_Aliased
+ (
+   1 NA[*]
+     2 CodeSet = F8
+     2 CodeSetDisplay = VC
+     2 CV[*]
+       3 CodeValue = F8
+       3 CodeValueDisplay = VC
+ )  ;; End
+ 
+Free Record Hold_Code
+Record Hold_Code
+ (
+   1 HC[*]
+     2 CodeSet   = F8
+     2 CodeSetDisplay
+     2 CodeValue = F8     
+ )  ;; End
+ 
+;; This is to query the oen_txlog table
 Declare BASE_QUERY_DATE = VC With Public,
   Constant(Format((CURDATE - 1), "MM/DD/YYYY;;D"))
 Declare BASE_QUERY_START_TIME = VC With Public,
@@ -52,6 +80,8 @@ Declare BASE_QUERY_START_TIME = VC With Public,
 Declare BASE_QUERY_END_TIME = VC With Public,
   Constant("23:59:59")
 Declare Populate_Query_Date(procID) = I2
+Declare Get_Msg_Keys(junk)      = I2
+Declare Get_Txlog_Msg(keyIndex) = VC
  
 ;;;; Email variables and funcs
 Declare MyEnv = VC With Public,
@@ -63,41 +93,114 @@ Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
 Declare FromEmailAddress = VC With Public,
   Constant(ConCat("daily_rpt_no_alias_", Trim(MyEnv), "@stjohn.org"))
 Declare Send_Email_Msg(toEmail, msgToSend) = I2
-
+ 
 ;;;; Misc funcs to run program
-Declare Get_Out_Interface(junk) = I2
-;;;Declare Get_Msg_Keys(
+Declare Get_Out_Interface(junk) = I2  ;; will get the list of outbound interfaces 4 msgs to check
+ 
+;;;; parsing routines n variables
+Declare NOT_ALIASED_VALUE = VC With Public,
+  Constant("CD:")
+Declare Parse_CD_Values(msg) = VC  ;; will parse the message apart to get to the CD:<num>
+Declare Add_MSG_CD(cdValue)  = I2
 
+;;;; capturing the data for the report
+Declare Load_Not_Aliased(junk)  = I2  ;; load the not aliased rec struc with unique values
+Declare Clear_Not_Aliased(junk) = I2  ;; purge the not aliased rec struc
+Declare Load_Code_Hole(codeValue) = I2  ;; will query the code value and code value set table 
+ 
+Declare log_msg(msg1, msg2) = I2
+ 
 Set stat = Get_Out_Interfaces(0)
-
+ 
+;; Loop over the outbound interfaces
 For (oiCtr = 1 To Size(Out_Interfaces->OI, 5))
   Set stat = Populate_Query_Date(Out_Interfaces->OI[oiCtr]->InterfaceID)
-  Call echo(build("Begin key:*",
-           Query_Date->QD[1]->Begin_Key, char(0)))
-  call echo(build("End Key:*",
-           Query_Date->QD[1]->end_Key, char(0)))
-  if (oiCtr > 5)
-    set oictr = (size(out_interfaces->oi, 5) + 1)
-  endif
-EndFor
-
-
+  Set stat = Get_Msg_Keys(0)
+  ;;;; loop over the messages for the individual proc id/interface
+  For (keyCtr = 1 To Size(Msg_Key->MK, 5))
+    Declare TXMsg = VC
+    Set TXMsg = Get_Txlog_Msg(keyCtr)
+    If (Parse_CD_Values(TXMsg) > 0)
+      Set stat = Load_Not_Aliased(0)
+      ;; send email to interested parties
+      ;; do i want to break this out by contributor source or by interface?
+    EndIf
+    if (keyCtr > 0)
+      set keyctr = (Size(Msg_Key->MK, 5) + 1)
+    endif
+  EndFor  ;; endthe keyCtr FOR
+  ;;if (oiCtr > 5)
+    ;;set oictr = (size(out_interfaces->oi, 5) + 1)
+  ;;endif
+EndFor  ;; End the oiCtr FOR
+ 
+ 
 ;;;; Subs below
+ 
+subroutine log_msg(msg1, msg2)
+  call echo(build(msg1, "-and-", msg2, char(0)))
+  return (1)
+end
+ 
+;;;; ====================
 
+Subroutine Load_Not_Aliased(junk)
+  Set stat = Clear_Not_Aliased(0)
+  For (mcCtr = 1 To Size(Msg_CD->MC, 5))
+    If (Load_Code_Hold(Msg_CD->MC[mcCtr]->CD_Value) > 0)
+    
+    EndIf
+  EndFor
+End ;; ENd 
+
+;;;; =======
+
+Subroutine Load_Code_Hole(codeValue)
+  Set stat = AlterList(Hold_Code->HC, 0)
+  Select Into "nl:"
+    cv.code_set,
+    cvs.display
+  From code_value cv,
+       code_value_set cvs
+  Plan cv
+    Where cv.code_value = codeValue
+   Join cvs
+    Where cvs.code_set = cv.code_set
+  Detail
+    stat = AlterList(Hold_Code->HC, 1)
+    Hold_Code->HC[1]->CodeSet = cv.code_set
+    Hold_Code->HC[1]->CodeSetDisplay = cvs.display
+    Hold_Code->HC[1]->CodeValue      = codeValue
+  With MaxRec = 1
+  return (Size(Hold_Code->HC, 5)
+End   ;; end
+
+;;;; =======
+
+Subroutine Clear_Not_Aliased(junk)
+  For (naCtr = 1 TO Size(Not_Aliased->NA, 5))
+    Set stat = AlterList(Not_Aliased->NA[naCtr]->CV, 0)
+  EndFor
+  Set stat = AlterList(Not_Aliased->NA, 0)
+  return (0)
+End ;; End
+ 
+;;;; ==================== 
+ 
 Subroutine Send_Email_Msg(toEmail, msgToSend)
   Set stat = UAR_Send_Mail(
-                          NullTerm(toEmail), 
-                          NullTerm(ConCat(Trim(MyEnv), " - ESI Log daily rpt: ", 
+                          NullTerm(toEmail),
+                          NullTerm(ConCat(Trim(MyEnv), " - ESI Log daily rpt: ",
                                       Trim(EmailDate))),
-                          NullTerm(msgToSend), 
-                          NullTerm(FromEmailAddress), 
-                          5, 
+                          NullTerm(msgToSend),
+                          NullTerm(FromEmailAddress),
+                          5,
                           NullTerm("IPM.NOTE"))
   return (1)
 End ;; Ed
-
+ 
 ;;;; =========================
-
+ 
 Subroutine Populate_Query_Date(procID)
   Set stat = AlterList(Query_Date->QD, 0)
   Set stat = AlterList(Query_Date->QD, 1)
@@ -106,12 +209,12 @@ Subroutine Populate_Query_Date(procID)
   Declare Beg_Time = VC
   Declare End_Time = VC
   Declare SDString = VC
-  Declare EDString = VC 
+  Declare EDString = VC
   Set Beg_Date  = BASE_QUERY_DATE
   Set End_Date  = BASE_QUERY_DATE
   Set Beg_Time  = BASE_QUERY_START_TIME
   Set End_Time  = BASE_QUERY_END_TIME
-  
+ 
   SET SDSTRING  =  CNVTSTRING(CNVTDATE2(Beg_Date, "MM/DD/YYYY"), 5, 0, R)
   SET EDSTRING  =  CNVTSTRING(CNVTDATE2(End_Date, "MM/DD/YYYY"), 5, 0, R)
   SET TTIME  =  CONCAT(SUBSTRING(1, 2, BEG_TIME), SUBSTRING(4, 2, BEG_TIME))
@@ -130,10 +233,10 @@ Subroutine Populate_Query_Date(procID)
             CONCAT(" ", CNVTSTRING(procid, 4, 0, R), EDSTRING, ETSTRING, "*")
   return (Size(Query_Date->QD, 5))
 End ;; End
-
+ 
 ;;;; =========================
-
-Subroutine Get_Out_Interfaces(junk) 
+ 
+Subroutine Get_Out_Interfaces(junk)
   Declare tmpOICtr = I2
   Select Into "nl:"
     opi.proc_name,
@@ -146,6 +249,7 @@ Subroutine Get_Out_Interfaces(junk)
        oen_personality op
   Plan opi
     Where opi.service = "Outbound"
+          and opi.interfaceid = 1026
    Join op
     Where op.interfaceid = opi.interfaceid AND
           op.name = "PACKESO" AND
@@ -160,8 +264,84 @@ Subroutine Get_Out_Interfaces(junk)
     Out_Interfaces->OI[tmpOICtr]->PackESO     = CnvtReal(op.value)
   With NoCounter,Time=90
   return (Size(Out_Interfaces->OI, 5))
-End ;; End 
-
+End ;; End
+ 
+;;;; ======================
+ 
+Subroutine Get_Msg_Keys(junk)
+  Set stat = AlterList(Msg_Key->MK, 0)
+  Declare tmpMKCtr = I4
+  Select Into "nl:"
+    ot.tx_key
+  From oen_txlog ot
+  Plan ot
+    Where ot.tx_key >= Query_Date->QD[1]->Begin_Key AND
+          ot.tx_key <= Query_Date->QD[1]->End_Key
+  Detail
+    tmpMKCtr = (Size(Msg_Key->MK, 5) + 1)
+    stat     = AlterList(Msg_Key->MK, tmpMKCtr)
+    Msg_Key->MK[tmpMKCtr]->TX_Key = ot.tx_key
+  With NoCounter,time=120
+  return (Size(Msg_Key->MK, 5))
+End  ;; End
+ 
+;;;; ======================
+ 
+Subroutine Get_Txlog_Msg(keyIndex)
+  Declare tmpMsg = VC
+  Select Into "nl:"
+    ot.msg_text
+  From oen_txlog ot
+  Where ot.tx_key = Msg_Key->MK[keyIndex]->TX_Key
+  Detail
+    tmpMsg = ConCat(Trim(ot.msg_text))
+  With MaxRec = 1
+  return (tmpMsg)
+End ;; End
+ 
+;;;; ======================
+ 
+Subroutine Parse_CD_Values(msg)
+  declare myctr = i2 with public, noconstant(0)
+  Declare startPos  = I2
+  Declare startLoop = I2
+  Declare endPos    = I2
+  Declare sinChar   = C1
+  Set startPos = FindString(NOT_ALIASED_VALUE, msg)
+  While (startPos > 0)
+    Set startLoop = (startPos + Size(NOT_ALIASED_VALUE, 1))
+    Set endPos    = (Size(msg, 1) - startLoop)
+    For (ctr = startLoop To Size(msg, 1))
+      Set sinChar = SubString(ctr, 1, msg)
+      If (IsNumeric(sinChar) = FALSE)
+        ;;;Set ctr    = (ctr - 1)  ;; move it back to the last number
+        Set endPos = (ctr - startLoop)
+        Set ctr = (Size(msg, 1) + startLoop)
+      EndIf
+    EndFor
+    Set startLoop    = (startPos + Size(NOT_ALIASED_VALUE, 1))
+    Declare tmpValue = VC
+    Set tmpValue     = SubString(startLoop, endPos, msg)
+    Set stat = Add_MSG_CD(tmpValue)
+    Set startPos = FindString(NOT_ALIASED_VALUE, msg, startLoop)
+    Set myctr = myctr + 1
+    ;;if (myctr > 10)
+      ;;set startPos = 0
+    ;;endif
+  EndWhile
+  return (Size(Msg_CD->MC, 5))
+End ;; End
+ 
+;;;; ======================
+ 
+Subroutine Add_MSG_CD(cdValue)
+  Declare tmpMCCtr = I2
+  Set tmpMCCtr = (Size(Msg_CD->MC, 5) + 1)
+  Set stat     = AlterList(Msg_CD->MC, tmpMCCtr)
+  Set Msg_CD->MC[tmpMCCtr]->CD_Value = cdValue
+  return (Size(Msg_CD->MC, 5))
+End
+ 
 ;;;; END  =================
  
 end

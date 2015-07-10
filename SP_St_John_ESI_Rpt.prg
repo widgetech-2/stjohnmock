@@ -1,62 +1,85 @@
-drop program sp_st_john_esi_rpt go
-create program sp_st_john_esi_rpt
+drop program sp_out_unaliased_daily_rpt go
+create program sp_out_unaliased_daily_rpt
  
-;;;; %i /cerner/d_m22/ccluserdir/sp_st_john_esi_rpt.prg go
-;;;; sp_st_john_esi_rpt go
+/*****************
+  Script will check the OEN_TXLOG table for all outbound messages for the prior
+  day to check for CD:<num>. If found will keep a running total for the day. At
+  the end of the report will send an email to select individuals for the CD: values
+  found, what interfaces had the issue, and what code set's the values belonged to.
+  Will be broken out by interface
  
-If (Validate(reply->status_data->data, "Z") = "Z")
-  RECORD  REPLY
-  (
-    1  STATUS_DATA
-     2  STATUS  =  C1
-     2  SUBEVENTSTATUS [ 1 ]
-       3  OPERATIONNAME     =  C8
-       3  OPERATIONSTATUS   =  C1
-       3  TARGETOBJECTNAME  =  C15
-       3  TARGETOBJECTVALUE =  C100
-  )  ;; End
-EndIf
+  Question - how will report be created. Initial feelings report should be done for each
+  outbound interface for the prior day. Will i need to break that down in PROD? Meaning
+  will volume be too much on a busy interface to get all tx keys or ...?
  
-Set Script_Status = "F"
+  At this time query OEN_PROCINFO joining to OEN_PERSONALITY where OPI.service = OUTBOUND and
+  OP.PACKESO > 0  this is not the best way, but should do for now
+ *****************/
+
+/**************
+  TODO - issue with email. being sent for each oen msg and needs to only be sent once
+for each interface. 
+Made a change to correct, need to confirm.
+Need to give total count of messages check
+need to give total count of unaliased values by codeset/code value
+need to give date/time that report was run against
+possible need to break txlog query apart by time frame of every 6 hours
+***************/
  
-Free Record Last_Run_Rpt
-Record Last_Run_Rpt
+;;;; %i /cerner/d_m22/ccluserdir/sp_out_unaliased_daily_rpt.prg go
+;;;; sp_out_unaliased_daily_rpt go
+ 
+Free Record Out_Interfaces
+Record Out_Interfaces
  (
-   1 LRR[*]
-     2 Line = VC
-     2 Is_Running = C1
-     2 Last_ESI_Log_ID = F8
+   1 OI[*]
+     2 Proc_Name = VC
+     2 Proc_Desc = VC
+     2 InterfaceID = F8
+     2 SCP_ID      = F8
+     2 PackESO     = F8
  )  ;; End
  
-Free Record ESI_Log
-Record ESI_Log
+Free Record Msg_Key
+Record Msg_Key
  (
-   1 EL[*]
-     2 ESI_Log_ID = F8
-     2 Person_ID = F8
-     2 Encntr_ID = F8
-     2 ESI_Error_Stat = VC
-     2 ESI_Error_Text = VC
-     2 ESI_Msg_Type   = VC
-     2 ESI_Order_Ctrl = VC
-     2 ESI_Entity_Code = VC
-     2 ESI_Tx_Key      = VC
+   1 MK[*]
+     2 TX_Key = VC
  )  ;; End
  
-Free Record Query_Filter
-Record Query_Filter
+Free Record Query_Date
+Record Query_Date
  (
-   1 QF[2]
-     2 Filter = VC
+   1 QD[*]
+     2 Begin_Key = VC
+     2 End_Key   = VC
+ ) ;; End
+ 
+Free Record Msg_CD
+Record Msg_CD
+ (
+   1 MC[*]
+     2 CD_Value = F8
+ )
+ 
+Free Record Not_Aliased
+Record Not_Aliased
+ (
+   1 NA[*]
+     2 CodeSet = F8
+     2 CodeSetDisplay = VC
+     2 CV[*]
+       3 CodeValue = F8
+       3 CodeValueDisplay = VC
  )  ;; End
  
-;; common errors and the causes/fixes
-Free Record Common_Errors
-Record Common_Errors
+Free Record Hold_Code
+Record Hold_Code
  (
-   1 CE[*]
-     2 Error_String = VC
-     2 Possible_Cause = VC
+   1 HC[*]
+     2 CodeSet   = F8
+     2 CodeSetDisplay = VC
+     2 CodeValue = F8
  )  ;; End
  
 Free Record Email_List
@@ -66,440 +89,391 @@ Record Email_List
        2 To_Address = VC
  )
 Declare Add_To_Email_List(emailToAdd) = I2
-
-Declare REPLACE_HOLD_VALUE = VC With Public,
-  Constant("##_REPLACE_##")
-Declare RUN_FIRST_INDEX = I2 With Public,
-  Constant(1)
-Declare RUN_AFTER_FIRST_INDEX = I2 With Public,
-  Constant(2)
-Set Query_Filter->QF[RUN_FIRST_INDEX]->Filter =
-  ConCat("esi.create_dt_tm Between",
-       " CnvtDateTime((CURDATE-1), (CURTIME3 - 25000)) AND",  ;; this should be 5minutes back
-       " CnvtDateTime(CURDATE, CURTIME3)"
-       )  ;; End
-Set Query_Filter->QF[RUN_AFTER_FIRST_INDEX]->Filter =
-  ConCat("esi.esi_log_id > ", Trim(REPLACE_HOLD_VALUE))
  
-;;;; File information variables
-Declare MyEnv = VC With Public,
-  Constant(CnvtLower(Logical("ENVIRONMENT")))
-Declare LAST_RUN_ESI_LOG_TABLE = VC With Public,
-  Constant(ConCat(Trim("sp_log_rpt_"),
-                  Trim(MyEnv)
-                  ))
-Declare TBL_FIELD_SEP = C1 With Public,
-  Constant("|")
-Declare Set_Dir = VC With Public,
-   Constant(ConCat("/cerner/d_",
-              Trim(MyEnv), "/ccluserdir/"))
-Set Logical N Value(Set_Dir)
+;; This is to query the oen_txlog table
+Declare BASE_QUERY_DATE = VC With Public,
+  Constant(Format((CURDATE - 1), "MM/DD/YYYY;;D"))
+Declare BASE_QUERY_START_TIME = VC With Public,
+  Constant("00:00:01")
+Declare BASE_QUERY_END_TIME = VC With Public,
+  Constant("23:59:59")
+Declare Populate_Query_Date(procID) = I2
+Declare Get_Msg_Keys(junk)      = I2
+Declare Get_Txlog_Msg(keyIndex) = VC
  
-;;;; Email information
-Declare FromDefaultEmail = VC With Public,
-  Constant(ConCat("esi_fail_", trim(MyEnv), "@stjohn.org"))
-Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
-  Constant("agagnon@spconinc.com")
- 
-;;;; Script query information
-Declare SCRIPT_RUN_YES = C1 With Public,
-  Constant("Y")
-Declare SCRIPT_RUN_NO  = C1 With Public,
-  Constant("N")
-Declare INITIAL_LAST_ESI_LOG_ID = F8 With Public,
-  Constant(-1.0)
-Declare Where_Filter_Index = I2 With Public,
-  NoConstant(RUN_AFTER_FIRST_INDEX)
- 
-;;;; Logging
+;;;; Email variables and funcs
 Declare LINE_FEED = C2 With Public,
   Constant(ConCat(Char(13), Char(10)))
-Declare TAB = C1 With Public,
-  Constant(Char(9))
-Declare LogFile = VC With Public,
-  Constant("alex_log");
+Declare MyEnv = VC With Public,
+  Constant(CnvtLower(Logical("ENVIRONMENT")))
+Declare EmailDate = VC With Public,
+  Constant(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D"))
+Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
+  Constant("agagnon@spconinc.com");;;"Bryan.McKay@sjmc.org")
+Declare FromEmailAddress = VC With Public,
+  Constant(ConCat("daily_rpt_no_alias_", Trim(MyEnv), "@stjohn.org"))
+Declare Build_Email_Msg(procID, procName)  = I2
+Declare Send_Email_Msg(toEmail, msgToSend) = I2
  
-/*************
-  AG - Process flow
-  Script will perform a look up on table/file to determine if a prior instance of
-  the script is currently running (RUN = N(o)) and what the end point was for the last run.
-  If script is currently running, exit
+;;;; Misc funcs to run program
+Declare Get_Out_Interface(junk) = I2  ;; will get the list of outbound interfaces 4 msgs to check
  
-  If table/file not found means first time run of the script and end point is 5 minutes ago
+;;;; parsing routines n variables
+Declare NOT_ALIASED_VALUE = VC With Public,
+  Constant("CD:")
+Declare Parse_CD_Values(msg) = I2  ;; will parse the message apart to get to the CD:<num>
+Declare Add_MSG_CD(cdValue)  = I2
  
-  If script is NOT currently running, write table/file script is running (RUN = Y(es))
-  Run query on ESI Log looking for failures,warnings looking back where ESI_LOG_ID > File.ESI_LOG_ID
-  value found OR if first time run look back 5 minutes
+;;;; capturing the data for the report
+Declare Load_Not_Aliased(junk)   = I2  ;; load the not aliased rec struc with unique values
+Declare Insert_Not_Aliased(junk) = I2 ;; Will find a match or insert at proper location
+Declare Insert_Not_Aliased_NA(codeSetCD, 
+       codeSetName, insertPos)   = I2  ;; will perform actual insert 
+Declare Insert_Not_Aliased_CV(codeValueCD, csIndex,
+                      insertPos) = I2  ;; into the struc at the given loc
+Declare Clear_Not_Aliased(codeSetCD, 
+          codeSetName, codeValue) = I2  ;; purge the not aliased rec struc
+Declare Load_Code_Hold(codeValue) = I2  ;; will query the code value and code value set table
  
- *************/
+Declare log_msg(msg1, msg2) = I2
  
-;; Will only be ran once to create and will then be commented out
-Declare Create_ESI_Log_Rpt_Table(junk) = I2
+;;set stat = log_msg("Get out", "interface") 
+Set stat = Get_Out_Interfaces(0)
+;;set stat = log_msg("Back from", "out interfaces")
  
-;; Subroutine that will query the ESI Log table
-Declare Run_ESI_Log_Rpt(whenRunIndex) = I2
+;;go to EXIT_SP_OUT_UNALIASED_DAILY_RPT
+;; Loop over the outbound interfaces
+For (oiCtr = 1 To Size(Out_Interfaces->OI, 5))
+  Set stat = Populate_Query_Date(Out_Interfaces->OI[oiCtr]->InterfaceID)
+  Set stat = Get_Msg_Keys(0)
+
+  ;;;; loop over the messages for the individual proc id/interface
+  For (keyCtr = 1 To Size(Msg_Key->MK, 5))
+    Declare TXMsg = VC
+    Set TXMsg = Get_Txlog_Msg(keyCtr)    
+
+    If (Parse_CD_Values(TXMsg) > 0)
+      Set stat = Load_Not_Aliased(0)      
+      ;; send email to interested parties
+      ;; do i want to break this out by contributor source or by interface?
+    EndIf
+    if (keyCtr > 5)
+      set keyctr = (Size(Msg_Key->MK, 5) + 1)
+    endif
+  EndFor  ;; endthe keyCtr FOR
+  Set stat = Build_Email_Msg(Out_Interfaces->OI[oiCtr]->InterfaceID,
+                  Out_Interfaces->OI[oiCtr]->Proc_Name)
+  ;;if (oiCtr > 5)
+    ;;set oictr = (size(out_interfaces->oi, 5) + 1)
+  ;;endif
+EndFor  ;; End the oiCtr FOR
  
-;; Subroutines that will give starting and stopping points
-Declare Get_Start_Point(junk) = I2
-Declare Write_End_Point(lastESILogID, isRunning) = I2
- 
-;; Subroutine to send email
-Declare Build_Email_Msg(esiIndex, tmpMRN, tmpFIN, tmpCtrl) = VC
-Declare Send_Email_Notificaion(emailMsg, toEmailAddress) = I2
- 
-;;;; Logging
-Declare Write_Log_Msg(descrip, msg) = I2
- 
-;;;; Misc
-Declare Get_Parse(Seg, Pos, msg) = VC
-Declare Get_In_Msg(txKey) = VC
- 
-;;;; Loading of common errors
-Declare Load_Common_Errors(junk) = I2
-Declare Add_Common_Errors(errStr, fixStr) = I2
-Declare Find_Common_Error(esiError, defaultFix) = VC
- 
-/***********
-  Get start point for esi query, where last query left off
-  if file not found the default in data so query is ran for past 5 minutes
- ***********/
- 
-;;;Set stat = write_log_msg("get start point:", "begin")
-Set stat = Get_Start_Point(0)
-;;Set stat = write_log_msg("get start point:", "END")
-;;go to EXIT_SP_ST_JOHN_ESI_RPT
- 
-If ((Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID = INITIAL_LAST_ESI_LOG_ID) AND
-    (Last_Run_Rpt->LRR[1]->Is_Running = SCRIPT_RUN_NO))
-  Set stat = Write_End_Point(INITIAL_LAST_ESI_LOG_ID, SCRIPT_RUN_YES)
-  Set Where_Filter_Index = RUN_FIRST_INDEX
-ElseIf (Last_Run_Rpt->LRR[1]->Is_Running = SCRIPT_RUN_YES)
-  ;;;Set stat = Write_Log_Msg("Script is currently running", "LEAVE")
-  Go To EXIT_SP_ST_JOHN_ESI_RPT
-Else
-  Set stat = Write_End_Point(Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID,
-                  SCRIPT_RUN_YES)
-  Set Query_Filter->QF[RUN_AFTER_FIRST_INDEX]->Filter =
-         Replace(Query_Filter->QF[RUN_AFTER_FIRST_INDEX]->Filter,
-                 REPLACE_HOLD_VALUE,
-                 CnvtString(Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID)
-                 )  ;; end the replace
-EndIf
- 
-Set stat = Load_Common_Errors(0)
-Set stat = Run_ESI_Log_Rpt(Where_Filter_Index)
- 
-Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
-Set stat = Add_To_Email_List("agagnon@spconinc.com") 
- 
-For (esiCtr = 1 To Size(ESI_Log->EL, 5))
-  Declare MsgToSend = VC
-  Declare OrgMsg    = VC
-  Declare MsgMRN    = VC
-  Declare MsgFIN    = VC
-  Declare MsgCtrl   = VC
-  Set OrgMsg    = Get_In_Msg(ESI_Log->EL[esiCtr]->ESI_Tx_Key)
-  Set MsgMRN    = Get_Parse("PID|", 2, OrgMsg)
-  Set MsgFIN    = Get_Parse("PID|", 18, OrgMsg)
-  Set MsgCtrl   = Get_Parse("MSH|", 9, OrgMsg)
-  Set MsgToSend = Build_Email_Msg(esiCtr, MsgMRN, MsgFIN, MsgCtrl)
-  For (elCtr = To Size(Email_List->EL, 5))
-    Set stat = Send_Email_Notification(MsgToSend, 
-                Email_List->EL[elCtr]->To_Address)
-  EndFor
-EndFor
- 
-;;;; show the script has stopped and where to pick back up on
-Set Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID =
-      ESI_Log->EL[Size(ESI_Log->EL, 5)]->ESI_Log_ID
-Set stat = Write_End_Point(Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID, SCRIPT_RUN_NO)
- 
-#EXIT_SP_ST_JOHN_ESI_RPT
-Set stat = Write_Log_Msg("===============", "===============")
-Set Script_Status = "S"  ;; show script ran successfully
- 
-;;;; Just in case, mostly for testing
-if (Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID = INITIAL_LAST_ESI_LOG_ID)
-  Set stat = Write_End_Point(INITIAL_LAST_ESI_LOG_ID, SCRIPT_RUN_NO)
-endif
- 
-#EXIT_SP_ST_JOHN_ESI_RPT_ERROR
- 
+#EXIT_SP_OUT_UNALIASED_DAILY_RPT 
 ;;;; Subs below
  
-Subroutine Send_Email_Notification(MyMsg, toEmailAddress)
-  ;;;;call echo(build("send email: ", toEmailAddress, char(0)))
-  Set stat = UAR_Send_Mail(
-                          NullTerm(toEmailAddress),
-                          NullTerm(ConCat(Trim(MyEnv), " - ESI Failure/Warning: ",
-                                      Trim(Format(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY HH:MM:SS;;D")))),
-                          NullTerm(MyMsg),
-                          NullTerm(FromDefaultEmail),
-                          5,   ;; do not know what this is
-                          NullTerm("IPM.NOTE")
-                          )  ;; End the function
+subroutine log_msg(msg1, msg2)
+  call echo(build(msg1, "-and-", msg2, char(0)))
   return (1)
-End ;; End
+end
  
-;;;; ================
+;;;; ====================
  
-Subroutine Build_Email_Msg(esiIndex, tmpMRN, tmpFIN, tmpCtrl)
-  Declare tmpLine = VC
-  Declare tmpFixStr = VC
- 
-  Set tmpFixStr =
-     Find_Common_Error(ESI_Log->EL[esiIndex]->ESI_Error_Text, "UNKNOWN")
-  Set tmpLine = ConCat(
-    "Person ID:",
-       Trim(CnvtString(ESI_Log->EL[esiIndex]->Person_ID)), LINE_FEED,
-    "Encntr ID:",
-       Trim(CnvtString(ESI_Log->EL[esiIndex]->Encntr_ID)), LINE_FEED,
-    "Msg Ctrl:",
-       Trim(tmpCtrl), LINE_FEED,
-    "MRN:",
-       Trim(tmpMRN), LINE_FEED,
-    "FIN:",
-       Trim(tmpFIN), LINE_FEED,
-    "Msg Type:",
-       Trim(ESI_Log->EL[esiIndex]->ESI_Msg_Type), LINE_FEED,
-    "Order Ctrl:",
-       Trim(ESI_Log->EL[esiIndex]->ESI_Order_Ctrl), LINE_FEED,
-    "Order Code:",
-       Trim(ESI_Log->EL[esiIndex]->ESI_Entity_Code), LINE_FEED,
-    "Error Status:",
-       Trim(ESI_Log->EL[esiIndex]->ESI_Error_Stat), LINE_FEED,
-    "Error Text:",
-       Trim(ESI_Log->EL[esiIndex]->ESI_Error_Text), LINE_FEED,
-    TAB, "Possible fix:",
-       Trim(tmpFixStr)
-  )  ;; End the concat
-  return (tmpLine)
-End ;; End
- 
-;;;; ================
- 
-Subroutine Find_Common_Error(errError, defaultFix)
-  Declare tmpFCDIndex = I2 With Public, NoConstant(0)
-  Declare possibleFix = VC
-  Set errError = CnvtUpper(errError)
- 
-  For (fcdCtr = 1 To Size(Common_Errors->CE, 5))
-    ;;Set stat = Write_Log_Msg("ESI Error:", errError)
-    ;;set stat = write_log_msg("Common err:", Common_Errors->CE[fcdCtr]->Error_String)
-    If (FindString(Common_Errors->CE[fcdCtr]->Error_String,
-           errError) > 0)
-      ;;Set stat = write_log_msg("Found the string", "========")
-      Set tmpFCDIndex = fcdCtr
-      Set fcdCtr = (Size(Common_Errors->CE, 5) + 1)
+Subroutine Load_Not_Aliased(junk)
+  Set stat = Clear_Not_Aliased(0)
+  For (mcCtr = 1 To Size(Msg_CD->MC, 5))
+    If (Load_Code_Hold(Msg_CD->MC[mcCtr]->CD_Value) > 0)
+      Set stat = Insert_Not_Aliased(Hold_Code->HC[1]->CodeSet,
+           Hold_Code->HC[1]->CodeSetDisplay, Hold_Code->HC[1]->CodeValue)
     EndIf
   EndFor
+End ;; ENd
  
-  If (tmpFCDIndex > 0)
-    Set possibleFix = Common_Errors->CE[tmpFCDIndex]->Possible_Cause
-  Else
-    Set possibleFix = defaultFix
-  EndIf
- 
-  return (possibleFix)
-End ;; End
- 
-;;;; ================
- 
-Subroutine Run_ESI_Log_Rpt(whenRunIndex)
-  Declare elCtr = I2
-  Declare SQ = VC
-  Set SQ = ConCat(
-    "Select Distinct Into ", '"', "nl:", '"',
-       " esi.esi_log_id,esi.person_id,esi.encntr_id,esi.error_stat,esi.error_text,",
-       " esi.msh_msg_type,esi.order_ctrl, esi.hl7_entity_code,esi.tx_key",
-    " From esi_log esi Plan esi ",
-    " Where ", Trim(Query_Filter->QF[whenRunIndex]->Filter),
-    " and esi.error_stat In(", '"', "ESI_STAT_FAILURE", '"', ",",
-      '"', "ESI_STAT_WARNING", '"',
-      ;;;",", '"', "ESI_STAT_SUCCESS", '"',
-      ")",
-    " Detail",
-      " elCtr = (Size(ESI_Log->EL, 5) + 1)",
-      " stat  = AlterList(ESI_Log->EL, elCtr)",
-      " ESI_Log->EL[elCtr]->ESI_Log_ID = esi.esi_log_id",
-      " ESI_Log->EL[elCtr]->Person_ID  = esi.person_id",
-      " ESI_Log->EL[elCtr]->Encntr_ID  = esi.encntr_id",
-      " ESI_Log->EL[elCtr]->ESI_Error_Stat = esi.error_stat",
-      " ESI_Log->EL[elCtr]->ESI_Error_Text = esi.error_text",
-      " ESI_Log->EL[elCtr]->ESI_Msg_Type   = esi.msh_msg_type",
-      " ESI_Log->EL[elCtr]->ESI_Order_Ctrl = esi.order_ctrl",
-      " ESI_Log->EL[elCtr]->ESI_Entity_Code = esi.hl7_entity_code",
-      " ESI_Log->EL[elCtr]->ESI_Tx_Key      = esi.tx_key",
-    " With MaxRec=5 go"
-    )  ;; end the contact
-  Call Parser(SQ)
-  ;;Set stat = Write_Log_Msg("Run ESI Log Rpt: ", SQ)
-  ;;Set stat = Write_Log_Msg("Size of ESI Log: ",
-    ;;   CnvtString(Size(ESI_Log->EL, 5)))
-  return (Size(ESI_Log->EL, 5))
-End ;; End
- 
-;;;; ================
- 
-Subroutine Get_Start_Point(junk)
-  Set stat = AlterList(Last_Run_Rpt->LRR, 0)
-  Declare fileName = VC
-  Set fileName = ConCat(
-     Trim(Set_Dir),
-     Trim(LAST_RUN_ESI_LOG_TABLE),
-     Trim(".dat"))
-  Set stat = Write_Log_msg("Last flie:", fileName)
-  If (FindFile(fileName) = TRUE)
-    Set stat = Write_Log_Msg("File does exist:", "---")
-    Free define rtl2
-    Set Logical cclfilein Value(fileName)
-    Select Into "nl:"
-      fl.line
-    From rtl2t fl
-    Detail
-      stat = AlterList(Last_Run_Rpt->LRR, 1)
-      Last_Run_Rpt->LRR[1]->Line = fl.line
-    With MaxRec = 1
-  EndIf
-  If (Size(Last_Run_Rpt->LRR, 5) = 0)
-    Set stat = Write_Log_Msg("Line is empty", "-------")
-    Set stat = AlterList(Last_Run_Rpt->LRR, 1)
-    Set Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID =
-            INITIAL_LAST_ESI_LOG_ID
-    Set Last_Run_Rpt->LRR[1]->Is_Running =
-            SCRIPT_RUN_NO
-  Else
-    Declare begPos = I2
-    Declare tmpLine = Vc
-    Set tmpLine = Last_Run_Rpt->LRR[1]->Line
-    Set stat = Write_Log_msg("Line:", tmpLine)
-    Set begPos = FindString(TBL_FIELD_SEP, tmpLine)
-    If (begPos > 0)
-      Set Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID =
-         CnvtReal(SubString(1, (begPos - 1), tmpLine))
-      Set Last_RUn_Rpt->LRR[1]->Is_Running =
-         SubString((begPos + 1), 1, tmpLine)
+;;;; =======
+
+Subroutine Insert_Not_Aliased(codeSetCD, codeSetName, codeValue)
+  Declare csPos = I2
+  Declare cvPos = I2
+  Set cvPos = 0
+  Set csPos = 0
+  For (naCtr = 1 To Size(Not_Aliased->NA, 5))
+    If (Not_Aliased->NA[naCtr]->CodeSet >= codeSetCD)
+      Set csPos = naCtr
+      Set naCtr = (Size(Not_Aliased->NA, 5) + 1)
     EndIf
+  EndFor
+  Set csPos = Insert_Not_Aliased_NA(codeSetCD, codeSetName, csPos)
+  For (cvCtr = 1 To Size(Not_Aliased->NA[csPos]->CV, 5))
+    If (Not_Aliased->NA[csPos]->CV[cvCtr]->CodeValue >= codeValue)
+      Set cvPos = cvCtr
+      Set cvCtr = (Size(Not_Aliased->NA[csPos]->CV, 5) + 1)
+    EndIf
+  EndFor
+  Set cvPos = Insert_Not_Aliased_CV(codeValue, csPos, cvPos)
+  /***
+  for (naCtr=1 to size(not_aliased->na,5))
+    set stat = log_msg("COde set:", not_aliased->NA[nactr]->CodeSetDisplay)
+    for (cvCtr = 1 to size(not_aliased->NA[nactr]->CV, 5))
+      set stat = log_msg("Code Value:", 
+          uar_get_code_display(not_aliased->NA[nactr]->CV[cvctr]->CodeValue))
+    endfor
+  endfor
+  ****/
+  return (Size(Not_Aliased->NA, 5))
+End ;; End
+
+;;;; ========
+
+Subroutine Insert_Not_Aliased_NA(codeSetCD, codeSetName, insertPos)
+  Declare tmpCSCtr = I2  
+  Set tmpCSCtr     = insertPos
+  If (insertPos = 0)
+    Set tmpCSCtr = (Size(Not_Aliased->NA, 5) + 1)
+    Set stat = AlterList(Not_Aliased->NA, tmpCSCtr)
+  Else
+    Set stat = AlterList(Not_Aliased->NA, 
+        (Size(Not_Aliased->NA, 5) + 1), (tmpCSCtr - 1))
   EndIf
-  ;;Set stat = Write_Log_Msg("Last ID:",
-    ;;;   CnvtString(Last_Run_Rpt->LRR[1]->Last_ESI_Log_ID))
-  ;;Set stat = Write_Log_Msg("Is Running:",
-    ;;;   Last_Run_Rpt->LRR[1]->Is_Running)
-  return (Size(Last_Run_Rpt->LRR, 5))
+  Set Not_Aliased->NA[tmpCSCtr]->CodeSet = codeSetCD
+  Set Not_Aliased->NA[tmpCSCtr]->CodeSetDisplay = codeSetName
+  return (tmpCSCtr)
+End  ;; End
+
+;; =======
+
+Subroutine Insert_Not_Aliased_CV(codeValueCD, csIndex, insertPos)
+  Declare tmpCVCtr = i2
+  Set tmpCVCtr = insertPos
+  If (insertPos = 0)
+    Set tmpCVCtr = (Size(Not_Aliased->NA[csIndex]->CV, 5) + 1)
+    Set stat = AlterList(Not_Aliased->NA[csIndex]->CV, tmpCVCtr)
+  Else
+    Set stat = AlterList(Not_Aliased->NA[csIndex]->CV,
+         (Size(Not_Aliased->NA[csIndex]->CV, 5) + 1), (tmpCVCtr - 1))
+  EndIf
+  Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValue = codeValueCD
+  Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValueDisplay =
+            UAR_Get_Code_Display(codeValueCD)
+  return (Size(Not_Aliased->NA[csIndex]->CV, 5))
+End  ;; End
+
+;;;; =======
+ 
+Subroutine Load_Code_Hold(codeValue)
+  Set stat = AlterList(Hold_Code->HC, 0)
+  Select Into "nl:"
+    cv.code_set,
+    cvs.display
+  From code_value cv,
+       code_value_set cvs
+  Plan cv
+    Where cv.code_value = codeValue
+   Join cvs
+    Where cvs.code_set = cv.code_set
+  Detail
+    stat = AlterList(Hold_Code->HC, 1)
+    Hold_Code->HC[1]->CodeSet = cv.code_set
+    Hold_Code->HC[1]->CodeSetDisplay = cvs.display
+    Hold_Code->HC[1]->CodeValue      = codeValue
+  With MaxRec = 1
+  return (Size(Hold_Code->HC, 5))
+End   ;; end
+ 
+;;;; =======
+ 
+Subroutine Clear_Not_Aliased(junk)
+  For (naCtr = 1 TO Size(Not_Aliased->NA, 5))
+    Set stat = AlterList(Not_Aliased->NA[naCtr]->CV, 0)
+  EndFor
+  Set stat = AlterList(Not_Aliased->NA, 0)
+  return (0)
 End ;; End
  
-;;;; ================
- 
-Subroutine Write_End_Point(lastESILogID, isRunning)
-  Set stat = Write_Log_Msg("Write End Point", isRunning)
-  Set stat = Write_Log_Msg("Write last esi", cnvtstring(lastESILogID))
-  Select Into Value(ConCat("n:", Trim(LAST_RUN_ESI_LOG_TABLE)))
-    ConCat(Trim(CnvtString(lastESILogID)), TBL_FIELD_SEP,
-           Trim(isRunning)
-          )  ;; End
-  With NOFORMFEED,NOHEADING,NOCOUNTER,FORMAT=UNDEFINED
+;;;; ====================
+
+Subroutine Build_Email_Msg(procID, procName)
+  Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
+  Declare MyMsg = VC
+  Set MyMsg = ConCat(
+     "PROC ID:", CnvtString(procID), LINE_FEED,
+     "NAME:", procName)
+  For (naCtr = 1 To Size(Not_Aliased->NA,5))
+    Set MyMsg = ConCat(Trim(MyMsg), LINE_FEED,
+        "     ", "CODE SET:",
+            Trim(CnvtString(Not_Aliased->NA[naCtr]->CodeSet)), LINE_FEED,
+        "     ", "CODE SET DISPLAY:", 
+            Trim(Not_Aliased->NA[naCtr]->CodeSetDisplay))
+    For (cvCtr = 1 To Size(Not_Aliased->NA[naCtr]->CV, 5))
+      Set MyMsg = ConCat(Trim(MyMsg), LINE_FEED,
+        "           ", "CODE VALUE:", 
+             Trim(CnvtString(Not_Aliased->NA[naCtr]->CV[cvCtr]->CodeValue)), LINE_FEED,
+        "           ", "CODE VALUE DISPLAY:",
+             Trim(UAR_Get_Code_Display(Not_Aliased->NA[naCtr]->CV[cvCtr]->CodeValue)))
+    EndFor
+  EndFor
+  For (eaCtr = 1 To Size(Email_List->EL, 5))
+    Set stat = Send_Email_Msg(Email_List->EL[eaCtr]->To_Address,
+                  MyMsg)
+  EndFor
   return (1)
-End  ;;; End
+End ;; End
+
+;;;; ====================
  
-;;;; ================
- 
-Subroutine Write_Log_Msg(descrip, msg)
-  ;;return (1)
-  ;;;call echo(build(char(0), char(0),descrip," - ", msg, char(0), char(0)))
-  ;;;call echo(build("Write file:", logfile, char(0)))
-  Select Into Value(ConCat("n:", Trim(logFile)))
-    ConCat(Trim(descrip), ":", Trim(msg), LINE_FEED)
-  With NOFORMFEED, NOHEADING, NOCOUNTER, APPEND, FORMAT=UNDEFINED
+Subroutine Send_Email_Msg(toEmail, msgToSend)
+  Set stat = UAR_Send_Mail(
+                          NullTerm(toEmail),
+                          NullTerm(ConCat(Trim(MyEnv), " - ESI Log daily rpt: ",
+                                      Trim(EmailDate))),
+                          NullTerm(msgToSend),
+                          NullTerm(FromEmailAddress),
+                          5,
+                          NullTerm("IPM.NOTE"))
   return (1)
-End ;; ed
+End ;; Ed
  
-;;;; ===================
+;;;; =========================
  
-Subroutine Get_In_Msg(txKey)
+Subroutine Populate_Query_Date(procID)
+  Set stat = AlterList(Query_Date->QD, 0)
+  Set stat = AlterList(Query_Date->QD, 1)
+  Declare Beg_Date = VC
+  Declare End_Date = VC
+  Declare Beg_Time = VC
+  Declare End_Time = VC
+  Declare SDString = VC
+  Declare EDString = VC
+  Set Beg_Date  = BASE_QUERY_DATE
+  Set End_Date  = BASE_QUERY_DATE
+  Set Beg_Time  = BASE_QUERY_START_TIME
+  Set End_Time  = BASE_QUERY_END_TIME
+ 
+  SET SDSTRING  =  CNVTSTRING(CNVTDATE2(Beg_Date, "MM/DD/YYYY"), 5, 0, R)
+  SET EDSTRING  =  CNVTSTRING(CNVTDATE2(End_Date, "MM/DD/YYYY"), 5, 0, R)
+  SET TTIME  =  CONCAT(SUBSTRING(1, 2, BEG_TIME), SUBSTRING(4, 2, BEG_TIME))
+  SET TITIME = (CNVTMIN(CNVTINT(TTIME)) * 60 +
+                   CNVTINT(SUBSTRING(7, 2, BEG_TIME))) * 100
+ 
+  SET STSTRING = CNVTSTRING(TITIME, 7, 0, R)
+  SET TTIME    = CONCAT(SUBSTRING(1, 2, END_TIME), SUBSTRING(4, 2, END_TIME))
+  SET TITIME   = (CNVTMIN(CNVTINT(TTIME)) * 60 +
+                  CNVTINT(SUBSTRING(7, 2,  END_TIME ))) * 100
+  SET ETSTRING = CNVTSTRING(TITIME, 7, 0, R)
+ 
+  Set Query_Date->QD[1]->Begin_Key =
+            CONCAT(" ", CNVTSTRING(procid, 4, 0, R), SDSTRING, STSTRING, "*")
+  Set Query_Date->QD[1]->End_Key =
+            CONCAT(" ", CNVTSTRING(procid, 4, 0, R), EDSTRING, ETSTRING, "*")
+  return (Size(Query_Date->QD, 5))
+End ;; End
+ 
+;;;; =========================
+ 
+Subroutine Get_Out_Interfaces(junk)
+  Declare tmpOICtr = I2
+  Select Into "nl:"
+    opi.proc_name,
+    opi.proc_desc,
+    opi.service,
+    opi.interfaceid,
+    opi.scp_eid,
+    op.value
+  From oen_procinfo opi,
+       oen_personality op
+  Plan opi
+    Where opi.service = "Outbound"
+          and opi.interfaceid = 1026
+   Join op
+    Where op.interfaceid = opi.interfaceid AND
+          op.name = "PACKESO" AND
+          op.value != "0"
+  Detail
+    tmpOICtr = (Size(Out_Interfaces->OI, 5) + 1)
+    stat     = AlterList(Out_Interfaces->OI, tmpOICtr)
+    Out_Interfaces->OI[tmpOICtr]->InterfaceID = opi.interfaceid
+    Out_Interfaces->OI[tmpOICtr]->SCP_ID      = opi.scp_eid
+    Out_Interfaces->OI[tmpOICtr]->Proc_Name   = opi.proc_name
+    Out_Interfaces->OI[tmpOICtr]->Proc_Desc   = opi.proc_desc
+    Out_Interfaces->OI[tmpOICtr]->PackESO     = CnvtReal(op.value)
+  With NoCounter,Time=90
+  return (Size(Out_Interfaces->OI, 5))
+End ;; End
+ 
+;;;; ======================
+ 
+Subroutine Get_Msg_Keys(junk)
+  Set stat = AlterList(Msg_Key->MK, 0)
+  Declare tmpMKCtr = I4
+  Select Into "nl:"
+    ot.tx_key
+  From oen_txlog ot
+  Plan ot
+    Where ot.tx_key >= Query_Date->QD[1]->Begin_Key AND
+          ot.tx_key <= Query_Date->QD[1]->End_Key
+  Detail
+    tmpMKCtr = (Size(Msg_Key->MK, 5) + 1)
+    stat     = AlterList(Msg_Key->MK, tmpMKCtr)
+    Msg_Key->MK[tmpMKCtr]->TX_Key = ot.tx_key
+  With NoCounter,time=120
+  return (Size(Msg_Key->MK, 5))
+End  ;; End
+ 
+;;;; ======================
+ 
+Subroutine Get_Txlog_Msg(keyIndex)
   Declare tmpMsg = VC
   Select Into "nl:"
-    oe.msg_text
-  From oen_txlog oe
-  Where oe.tx_key = txKey
+    ot.msg_text
+  From oen_txlog ot
+  Where ot.tx_key = Msg_Key->MK[keyIndex]->TX_Key
   Detail
-    tmpMsg = ConCat(Trim(oe.msg_text))
+    tmpMsg = ConCat(Trim(ot.msg_text))
   With MaxRec = 1
   return (tmpMsg)
 End ;; End
  
-;;;; ===================
+;;;; ======================
  
-Subroutine Get_Parse(Seg, Pos, msg)
-  Declare foundSeg = I2
-  Declare segCtr   = I2
-  Declare FieldDelim = C1
-  Declare SubDelim   = C1
-  Set FieldDelim     = "|"
-  Set SubDelim       "^"
-  Free Set Value
-  Set foundSeg = FindString(Seg, msg)
-  If (foundSeg = 0)
-    return (ConCat("No:", Trim(Seg, 3), " was found"))
-  EndIf
-  Set segCtr = 0
- 
-  While (segCtr < Pos)
-    Set foundSeg = FindString(FieldDelim, msg, foundSeg)
-    Set segCtr   = segCtr + 1  ;;;; Sure we found one, but keep moving
-    Set foundSeg = foundSeg + 1  ;;;; Move it forward one to get past it
-    If (segCtr >= Pos)
-       Free Set begPos
-       Set begPos   = foundSeg
-       Set foundSeg = FindString(FieldDelim, msg, foundSeg)
-       Set Value = SubString(begPos, (foundSeg - begPos), msg)
-       Free Set foundSub
-       Set foundSub = FindString(SubDelim, Value)
-       If (foundSub > 0)
-         Set Value = SubString(1, (foundSub - 1), Value)
-       EndIf
-    EndIf
+Subroutine Parse_CD_Values(msg)
+  Set stat = AlterList(Msg_CD->MC, 0)
+  declare myctr = i2 with public, noconstant(0)
+  Declare startPos  = I2
+  Declare startLoop = I2
+  Declare endPos    = I2
+  Declare sinChar   = C1
+  ;;;set stat = log_msg("Msg:", msg)
+  Set startPos = FindString(NOT_ALIASED_VALUE, msg)
+  While (startPos > 0)
+    Set startLoop = (startPos + Size(NOT_ALIASED_VALUE, 1))
+    Set endPos    = (Size(msg, 1) - startLoop)
+    For (ctr = startLoop To Size(msg, 1))
+      Set sinChar = SubString(ctr, 1, msg)
+      If (IsNumeric(sinChar) = FALSE)
+        ;;;Set ctr    = (ctr - 1)  ;; move it back to the last number
+        Set endPos = (ctr - startLoop)
+        Set ctr = (Size(msg, 1) + startLoop)
+      EndIf
+    EndFor
+    Set startLoop    = (startPos + Size(NOT_ALIASED_VALUE, 1))
+    Declare tmpValue = VC
+    Set tmpValue     = SubString(startLoop, endPos, msg)
+    Set stat = Add_MSG_CD(tmpValue)
+    Set startPos = FindString(NOT_ALIASED_VALUE, msg, startLoop)
+    Set myctr = myctr + 1
+    
   EndWhile
-  Set foundSeg = FindString(Char(13), Value)
-  If (foundSeg > 0)
-    Set Value = SubString(1, (foundSeg - 1), Value)
-  EndIf
-  return (Value)
+  return (Size(Msg_CD->MC, 5))
 End ;; End
  
-;;;; ===================
+;;;; ======================
  
-Subroutine Load_Common_Errors(junk)
-  Set stat = Add_Common_Errors(
-     "Error retrieving order catalog code value for alias:",
-     "Value is probably not aliased on cs 200")  ;1
-  Set stat = Add_Common_Errors(
-     "Unable to retrieve activity_type_flag from order_catalog table for catalog_cd",
-     "Value in OBR 4.1 is aliased, but catalog_cd/code_value is not active")  ;;2
-  Set stat = Add_Common_Errors(
-     "Unable to retrieve order_id from order_alias table for the alias_entity_alias_type_cd",
-     "Value in ORC/OBR 2 or 3 was not found on the ORDER_ALIAS table")  ;; 3
-  Set stat = Add_Common_Errors(
-     "Order_id exists on order_alias table for alias",
-     "Value in ORC/OBR 2 or 3 was found, but belongs to a different order")  ;;4
-  Set stat = Add_Common_Errors(
-     "Unable to retrieve action_type_cd for catalog_cd",
-     "OBR 4.1 is not aliased inbound or value in ORC 1 is not aliased")  ;;5
-  return (Size(Common_Errors->CE, 5))
-End  ;; end
- 
-;;;; ============
- 
-Subroutine Add_Common_Errors(errStr, fixStr)
-  Declare tmpCECtr = I2
-  Set tmpCECtr = (Size(Common_Errors->CE, 5) + 1)
-  Set stat     = AlterList(Common_Errors->CE, tmpCECtr)
-  Set Common_Errors->CE[tmpCECtr]->Error_String =
-       CnvtUpper(errStr)
-  Set Common_Errors->CE[tmpCECtr]->Possible_Cause =
-       CnvtUpper(fixStr)
-  return (Size(Common_Errors->CE, 5))
-End ;; End
- 
+Subroutine Add_MSG_CD(cdValue)
+  Declare tmpMCCtr = I2
+  Set tmpMCCtr = (Size(Msg_CD->MC, 5) + 1)
+  Set stat     = AlterList(Msg_CD->MC, tmpMCCtr)
+  Set Msg_CD->MC[tmpMCCtr]->CD_Value = CnvtReal(cdValue)
+  return (Size(Msg_CD->MC, 5))
+End
+
 ;;;; ===================
 
 Subroutine Add_To_Email_List(emailToAdd)
@@ -509,9 +483,10 @@ Subroutine Add_To_Email_List(emailToAdd)
   Set Email_List->EL[tmpELCtr]->To_Address = emailToAdd
   return (Size(Email_List->EL, 5))
 End ;; End
+
  
- 
-;;;; ======= END =======
+;;;; END  =================
  
 end
 go
+ 
