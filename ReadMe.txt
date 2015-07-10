@@ -22,3 +22,4 @@ St John CCL and OE Scripts
 9. SP_TIME_TEST.PRG
 	testing script for OEN_TXLOG key breakdown and how to format to query
 make a change on teh s&p laptop
+Making a change
