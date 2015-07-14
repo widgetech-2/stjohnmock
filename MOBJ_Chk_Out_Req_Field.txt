@@ -22,6 +22,17 @@ Record Email_List
        2 To_Address = VC
  )
 
+Free Record Patient_Identifier
+Record Patient_Identifier
+ (
+    1 PI[*]
+        2 Identifier = VC
+ )
+
+Declare ENCNTR_MRN_TYPE = F8 With Public,
+  Constant(1079.0)
+Declare Get_Encntr_Alias(e_id, type) = I2
+
 Declare TAB = C1 With Public,
   Constant(Char(9))
 Declare FIELD_SEP = C2 With Public,
@@ -60,13 +71,18 @@ EndIf
 
 If (Is23Msg = TRUE)
   If (Size(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 5) = 0)
-    Set stat = Add_Missing_Field("PID 3 (MRN) is EMPTY", DUMP_MSG_YES)
-  Else
-     Set stat = Check_Field_For_Empty(
+    Set stat = AlterList(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 1)
+  EndIf
+  If (oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id = "")
+     If (Get_Encntr_Alias(MCORF_Encntr_ID, ENCNTR_MRN_TYPE) > 0)
+        Set oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id =
+                   Patient_Identifier->PI[1]->Identifier
+     EndIf
+  EndIf
+  Set stat = Check_Field_For_Empty(
           oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id,
           DUMP_MSG_YES,
           "PID 3.1 (MRN) is BLANK")
-  EndIf
   If (MCORF_Encntr_ID > 0)
     Set stat = Check_Field_For_Empty(
           oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_account_nbr->id,
@@ -75,13 +91,13 @@ If (Is23Msg = TRUE)
   EndIf
 Else
   If (Size(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 5) = 0)
-    Set stat = Add_Missing_Field("PID 3 (MRN) is EMPTY", DUMP_MSG_YES)
-  Else
-          Set stat = Check_Field_For_Empty(
+    Set stat = AlterList(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int, 1)
+  EndIf
+  Set stat = Check_Field_For_Empty(
           oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->pat_id,
           DUMP_MSG_YES,
           "PID 3.1 (MRN) is BLANK")
-  EndIf
+
   If (MCORF_Encntr_ID > 0)
     Set stat = Check_Field_For_Empty(
           oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_account_nbr->pat_id,
@@ -106,11 +122,29 @@ If (Size(Missing_Field->MF, 5) > 0)
     Go To EXIT_MOBJ_CHK_OUT_REQ_FIELD
   EndIf
 EndIf  ;; enthe IF
-;;set stat = uar_kill_me(0)
+;;;set stat = uar_kill_me(0)
 #EXIT_MOBJ_CHK_OUT_REQ_FIELD
 execute oencpm_msglog build("End of MOBJ_Chk_Out_Req_Field", char(0))
 
 ;;;; SUBs below
+
+Subroutine Get_Encntr_Alias(e_id, type)
+  Set stat = AlterList(Patient_Identifier->PI, 0)
+  Select Into "nl:"
+    ea.alias
+  From encntr_alias ea
+  Plan ea
+    Where ea.encntr_id = e_id AND
+                  ea.encntr_alias_type_cd = type AND
+                  ea.active_ind = TRUE
+  Detail
+    stat = AlterList(Patient_Identifier->PI, 1)
+    Patient_Identifier->PI[1]->Identifier = ea.alias
+  With MaxRec = 1
+  return (Size(Patient_Identifier->PI, 5))
+End ;; End
+
+;;;; ====================
 
 Subroutine Check_Field_For_Empty(fieldToCheck, dumpMsg, msgStr)
   Declare tmpFieldIsEmpty = I2 With Public, 
