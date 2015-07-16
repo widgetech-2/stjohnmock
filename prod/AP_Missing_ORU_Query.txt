@@ -1,0 +1,48 @@
+
+select distinct o.order_id,
+       o.catalog_cd,
+       oc.primary_mnemonic,
+       ce.event_id,
+       ce.accession_nbr
+from orders o,
+     order_catalog oc,
+     clinical_event ce
+plan o
+  where o.updt_dt_tm between
+     CnvtDateTime(CURDATE, 0) AND
+     CnvtDateTime(CURDATE, 235959)
+ join oc
+  where oc.catalog_cd = o.catalog_cd AND
+        oc.activity_type_cd = 671.0 ;; AP
+ join ce
+  where ce.order_id = o.order_id and
+        ce.view_level = 1 AND
+        not exists (select creq.chart_request_id
+                   from chart_request creq
+                   where creq.order_id = ce.order_id) 
+order by o.catalog_cd,o.order_id
+with maxrec=50,time=90
+
+
+select report_dt = format(pc.main_report_cmplete_dt_tm, "MM/DD/YYYY HH:MM:SS;;D"),       
+       cr.case_id,
+       ce.event_id,
+       ce.order_id,
+       ce.accession_nbr,
+       ce.EVENT_TITLE_TEXT
+from pathology_case pc,
+     case_report cr,
+     clinical_event ce
+plan pc
+   where pc.main_report_cmplete_dt_tm between 
+       CnvtDateTime(CURDATE - 5, 0) AND
+       CnvtDateTime(CURDATE, 235959)
+  join cr
+   where cr.case_id = pc.case_id
+ join ce
+   where ce.event_id = cr.event_id and
+         ce.catalog_cd = cr.catalog_cd and
+          not exists (select creq.chart_request_id
+                   from chart_request creq
+                   where creq.order_id = ce.order_id) 
+with nocounter,time=90
