@@ -277,7 +277,8 @@ Subroutine Build_Header(isMsg23, msgAcc, ordType)
   Set tmpHeader = ConCat(
        "CTRL ID-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_ctrl_id->ctrl_id1), FIELD_SEP,
        "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
-       "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
+       "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
+       "MSG Trig-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_trigger), FIELD_SEP,
        "MRN-", Trim(mrnValue), FIELD_SEP,
        "CLIENT-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->
                             assign_auth->name_id), FIELD_SEP,
