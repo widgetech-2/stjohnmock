@@ -32,6 +32,16 @@ plan pc
 with nocounter,time=90
 
 
+select cqm.*
+from fsieso_que_details fqd,
+     cqm_fsieso_que cqm
+plan fqd
+  where fqd.parent_entity_id = 89151511     
+ join cqm
+  where cqm.queue_id=fqd.queue_id
+order by cqm.queue_id desc
+with nocounter,time=90
+
 ;;; Below query does not work very well
 
 select distinct o.order_id,
