@@ -64,9 +64,12 @@ Declare Add_To_Email_List(emailToAdd) = I2
 ;;;; Misc values to process the message to an email
 Declare NoAliasPDMDTA = I2 With Public,
   NoConstant(FALSE)
+Declare NoAliasLocation = I2 With Public,
+  NoConstant(FALSE)
 Declare Msg_Activity_Type = VC
 Declare Msg_Accession_Num = VC
 Declare Build_Header(isMsg23, msgAcc, ordType) = VC
+Declare Get_Double_Value(strMean) = F8
 
 Declare Get_ORM_Accession(junk) = VC
 Declare Get_ORU_Accession_23(junk) = VC
@@ -164,6 +167,10 @@ If (Size(BadField->BF, 5) > 0)
   ;;; add the address to send to here for simplicty and one central location
   Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
   Set stat = Add_To_Email_List("agagnon@spconinc.com")
+  If (NoAliasLocation = TRUE)
+    Set stat = Add_To_Email_List("SCUTITTA@CERNER.COM")
+    Set stat = Add_To_Email_List("Tori.Gable@Cerner.com")
+  EndIf
   If (NoAliasPDMDTA = TRUE)
     If (Msg_Activity_Type = "MA")  ;; Micro
       Set stat = Add_To_Email_List("Jessica.Plubell@Cerner.com")
@@ -193,6 +200,8 @@ Subroutine Check_Field_For_Value(valueToCheck, fieldToCheck, fName)
      ;;;; found a bad value so add it to the rec struc
      If (fName In("OBR4.1", "OBX3.1"))
        Set NoAliasPDMDTA = TRUE
+     ElseIf (FindString("PatLoc", fName) > 0)
+       Set NoAliasLocation = TRUE
      EndIf
      Set stat = Add_BadField(fName, fieldToCheck)
   EndIf
@@ -268,6 +277,8 @@ End ;; Ed
 Subroutine Build_Header(isMsg23, msgAcc, ordType)
   Declare tmpHeader = VC
   Declare mrnValue = VC
+  Declare PersonID = F8
+  Set PersonID = Get_Double_Value("person_id")
   execute oencpm_msglog build("IsMsg23", ismsg23, char(0))
   If (isMsg23 = TRUE)
     Set mrnValue = oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->id 
@@ -279,7 +290,8 @@ Subroutine Build_Header(isMsg23, msgAcc, ordType)
        "MSG Date-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_time_stamp), FIELD_SEP,
        "MSG Type-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_type), FIELD_SEP,
        "MSG Trig-", Trim(oen_reply->CONTROL_GROUP [1]->MSH [1]->message_type->messg_trigger), FIELD_SEP,
-       "MRN-", Trim(mrnValue), FIELD_SEP,
+       "MRN-", Trim(mrnValue), FIELD_SEP,
+       "PERSON_ID-", Trim(CnvtString(PersonID)), FIELD_SEP, 
        "CLIENT-", Trim(oen_reply->PERSON_GROUP [1]->PAT_GROUP [1]->PID [1]->patient_id_int [1]->
                             assign_auth->name_id), FIELD_SEP,
        "ACC-", Trim(msgAcc), FIELD_SEP,
@@ -349,7 +361,7 @@ Subroutine Build_Msg_To_Send(is23, msgAcc, ordType)
   Set tmpMsgToSend = Build_Header(is23, Msg_Accession_Num, Msg_Activity_Type)
   For (bfCtr = 1 To Size(BadField->BF, 5))
     Set tmpMsgToSend = ConCat(
-             Trim(tmPMsgToSend), FIELD_SEP,
+             Trim(tmPMsgToSend), FIELD_SEP, FIELD_SEP, 
               Trim(BadField->BF[bfCtr]->FieldName), "-",
                     Trim(BadField->BF[bfCtr]->BadValue), FIELD_SEP,
                     "      ", "CVDisplay-", Trim(BadField->BF[bfCtr]->BadValueDisplay), FIELD_SEP, 
@@ -359,5 +371,19 @@ Subroutine Build_Msg_To_Send(is23, msgAcc, ordType)
   EndFor
   return (tmpMsgToSend)
 End ;; Ed
+
+;;;; =================
+
+Subroutine Get_Double_Value(strMean)
+  Declare tmpDblVal = F8 With Public, NoConstant(0.0)
+  Set strMean = CnvtLower(strMean) 
+  For (dblCtr = 1 to Size(oen_reply->cerner->doublelist, 5))
+     If (CnvtLower(oen_reply->cerner->doublelist[dblCtr]->strmeaning) = strMean)
+       Set tmpDblVal = CnvtReal(oen_reply->cerner->doublelist[dblCtr]->dval)
+       Set dblCtr = (Size(oen_reply->cerner->doublelist, 5) + 1)
+     EndIf
+  EndFor
+  return (tmpDblVal)
+End  ;; End
 
 ;;;; END
