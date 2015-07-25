@@ -17,7 +17,7 @@ If (Is23Msg)
     Set ING_Size = Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 5)
     While (INS_Ctr <= ING_Size)
       ;;;; Drop the IN1 if this value
-      If (oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP [ING_Ctr]->
+      If (oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP [INS_Ctr]->
                   IN1 [1]->ins_plan_id->identifier In("UNK"))
         Set stat = AlterList(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 
               (Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 5) - 1), (INS_Ctr - 1))
