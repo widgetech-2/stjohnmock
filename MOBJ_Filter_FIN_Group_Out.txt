@@ -1,0 +1,32 @@
+execute oencpm_msglog build("Begin of MOBJ_FIlter_FIN_Group_Out", char(0))
+
+;;  Script will loop over fin group and remove unwanted values
+
+Declare Is23Msg = I2 With Public, NoConstant(TRUE)
+
+If (Validate(oen_reply->CONTROL_GROUP [1]->MSH [1]->version->version_id, "Z") != "Z")
+  Set Is23Msg = FALSE  ;; 2.4 or higher
+EndIf
+
+Declare INS_Ctr = I2
+Declare ING_Size = I2
+
+If (Is23Msg)
+  For (fgCtr = 1 To Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP, 5))
+    Set INS_Ctr = 1
+    Set ING_Size = Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 5)
+    While (INS_Ctr <= ING_Size)
+      ;;;; Drop the IN1 if this value
+      If (oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP [ING_Ctr]->
+                  IN1 [1]->ins_plan_id->identifier In("UNK"))
+        Set stat = AlterList(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 
+              (Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 5) - 1), (INS_Ctr - 1))
+        Set ING_Size = Size(oen_reply->PERSON_GROUP [1]->FIN_GROUP [fgCtr]->INS_GROUP, 5)
+        Set INS_Ctr = INS_Ctr - 1
+      EndIf
+      Set INS_Ctr = INS_Ctr + 1
+    EndWhile
+  EndFor  ;; end the fgCtr FOR
+EndIf
+
+execute oencpm_msglog build("Begin of MOBJ_FIlter_FIN_Group_Out", char(0))
