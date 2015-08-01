@@ -16,6 +16,17 @@ create program sp_out_unaliased_daily_rpt
   OP.PACKESO > 0  this is not the best way, but should do for now
  *****************/
  
+ /**************
+  TODO - issue with email. being sent for each oen msg and needs to only be sent once
+for each interface.
+Made a change to correct, need to confirm.
+Need to give total count of messages check
+need to give total count of unaliased values by codeset/code value
+need to give date/time that report was run against
+possible need to break txlog query apart by time frame of every 6 hours
+***************/
+ 
+ 
 ;;;; %i /cerner/d_m22/ccluserdir/sp_out_unaliased_daily_rpt.prg go
 ;;;; sp_out_unaliased_daily_rpt go
  
@@ -49,7 +60,7 @@ Free Record Msg_CD
 Record Msg_CD
  (
    1 MC[*]
-     2 CD_Value = VC
+     2 CD_Value = F8
  )
  
 Free Record Not_Aliased
@@ -58,9 +69,11 @@ Record Not_Aliased
    1 NA[*]
      2 CodeSet = F8
      2 CodeSetDisplay = VC
+     2 CodeSet_Ctr = I2
      2 CV[*]
        3 CodeValue = F8
        3 CodeValueDisplay = VC
+       3 CodeValue_Ctr = I2
  )  ;; End
  
 Free Record Hold_Code
@@ -68,9 +81,19 @@ Record Hold_Code
  (
    1 HC[*]
      2 CodeSet   = F8
-     2 CodeSetDisplay
-     2 CodeValue = F8     
+     2 CodeSetDisplay = VC
+     2 CodeValue = F8
  )  ;; End
+ 
+Free Record Email_List
+Record Email_List
+ (
+    1 EL[*]
+       2 To_Address = VC
+ )
+Declare Add_To_Email_List(emailToAdd) = I2
+
+
  
 ;; This is to query the oen_txlog table
 Declare BASE_QUERY_DATE = VC With Public,
@@ -84,6 +107,8 @@ Declare Get_Msg_Keys(junk)      = I2
 Declare Get_Txlog_Msg(keyIndex) = VC
  
 ;;;; Email variables and funcs
+Declare LINE_FEED = C2 With Public,
+  Constant(ConCat(Char(13), Char(10)))
 Declare MyEnv = VC With Public,
   Constant(CnvtLower(Logical("ENVIRONMENT")))
 Declare EmailDate = VC With Public,
@@ -92,7 +117,10 @@ Declare DEFAULT_TO_EMAIL_ADDRESS = VC With Public,
   Constant("agagnon@spconinc.com");;;"Bryan.McKay@sjmc.org")
 Declare FromEmailAddress = VC With Public,
   Constant(ConCat("daily_rpt_no_alias_", Trim(MyEnv), "@stjohn.org"))
-Declare Send_Email_Msg(toEmail, msgToSend) = I2
+Declare Build_Email_Msg(procID, procName)  = I2
+Declare Send_Email_Msg(toEmail, msgToSend, processName) = I2
+
+Set stat = Add_To_Email_List(DEFAULT_TO_EMAIL_ADDRESS)
  
 ;;;; Misc funcs to run program
 Declare Get_Out_Interface(junk) = I2  ;; will get the list of outbound interfaces 4 msgs to check
@@ -100,41 +128,56 @@ Declare Get_Out_Interface(junk) = I2  ;; will get the list of outbound interface
 ;;;; parsing routines n variables
 Declare NOT_ALIASED_VALUE = VC With Public,
   Constant("CD:")
-Declare Parse_CD_Values(msg) = VC  ;; will parse the message apart to get to the CD:<num>
+Declare Parse_CD_Values(msg) = I2  ;; will parse the message apart to get to the CD:<num>
 Declare Add_MSG_CD(cdValue)  = I2
-
+ 
 ;;;; capturing the data for the report
-Declare Load_Not_Aliased(junk)  = I2  ;; load the not aliased rec struc with unique values
-Declare Clear_Not_Aliased(junk) = I2  ;; purge the not aliased rec struc
-Declare Load_Code_Hole(codeValue) = I2  ;; will query the code value and code value set table 
+Declare Load_Not_Aliased(junk)   = I2  ;; load the not aliased rec struc with unique values
+Declare Insert_Not_Aliased(junk) = I2 ;; Will find a match or insert at proper location
+Declare Insert_Not_Aliased_NA(codeSetCD,
+       codeSetName, insertPos)   = I2  ;; will perform actual insert
+Declare Insert_Not_Aliased_CV(codeValueCD, csIndex,
+                      insertPos) = I2  ;; into the struc at the given loc
+Declare Clear_Not_Aliased(codeSetCD,
+          codeSetName, codeValue) = I2  ;; purge the not aliased rec struc
+Declare Load_Code_Hold(codeValue) = I2  ;; will query the code value and code value set table
  
 Declare log_msg(msg1, msg2) = I2
  
+;;set stat = log_msg("Get out", "interface")
 Set stat = Get_Out_Interfaces(0)
+;;set stat = log_msg("Back from", "out interfaces")
  
+;;go to EXIT_SP_OUT_UNALIASED_DAILY_RPT
 ;; Loop over the outbound interfaces
 For (oiCtr = 1 To Size(Out_Interfaces->OI, 5))
+  Set stat = Clear_Not_Aliased(0)
   Set stat = Populate_Query_Date(Out_Interfaces->OI[oiCtr]->InterfaceID)
   Set stat = Get_Msg_Keys(0)
-  ;;;; loop over the messages for the individual proc id/interface
+  
   For (keyCtr = 1 To Size(Msg_Key->MK, 5))
     Declare TXMsg = VC
     Set TXMsg = Get_Txlog_Msg(keyCtr)
+    ;;;set stat = log_msg("Got the key", "got the mesge")
     If (Parse_CD_Values(TXMsg) > 0)
+      ;;set stat = log_msg("got parse for", 
+        ;;  cnvtstring(Out_Interfaces->OI[oiCtr]->InterfaceID))
       Set stat = Load_Not_Aliased(0)
-      ;; send email to interested parties
-      ;; do i want to break this out by contributor source or by interface?
     EndIf
-    if (keyCtr > 0)
-      set keyctr = (Size(Msg_Key->MK, 5) + 1)
-    endif
+    ;;if (size(not_aliased->na, 5) > 5)
+      ;;set stat = log_msg("Not alias", "> 5")
+      ;;set keyctr = (size(msg_key->MK, 5) + 1)
+    ;;endif
   EndFor  ;; endthe keyCtr FOR
-  ;;if (oiCtr > 5)
-    ;;set oictr = (size(out_interfaces->oi, 5) + 1)
-  ;;endif
+  ;;; only send the email if an unaliased value was found
+  If (Size(Not_Aliased->NA,5) > 0)
+    ;;;;set stat = log_msg("Write email for:", Out_Interfaces->OI[oiCtr]->Proc_Name)
+    Set stat = Build_Email_Msg(Out_Interfaces->OI[oiCtr]->InterfaceID,
+                    Out_Interfaces->OI[oiCtr]->Proc_Name)  
+  EndIf
 EndFor  ;; End the oiCtr FOR
  
- 
+#EXIT_SP_OUT_UNALIASED_DAILY_RPT
 ;;;; Subs below
  
 subroutine log_msg(msg1, msg2)
@@ -143,19 +186,95 @@ subroutine log_msg(msg1, msg2)
 end
  
 ;;;; ====================
-
-Subroutine Load_Not_Aliased(junk)
-  Set stat = Clear_Not_Aliased(0)
+ 
+Subroutine Load_Not_Aliased(junk)  
   For (mcCtr = 1 To Size(Msg_CD->MC, 5))
     If (Load_Code_Hold(Msg_CD->MC[mcCtr]->CD_Value) > 0)
-    
+      Set stat = Insert_Not_Aliased(Hold_Code->HC[1]->CodeSet,
+           Hold_Code->HC[1]->CodeSetDisplay, Hold_Code->HC[1]->CodeValue)
     EndIf
   EndFor
-End ;; ENd 
-
+End ;; ENd
+ 
 ;;;; =======
-
-Subroutine Load_Code_Hole(codeValue)
+ 
+Subroutine Insert_Not_Aliased(codeSetCD, codeSetName, codeValue)
+  Declare csPos = I2
+  Declare cvPos = I2
+  Set cvPos = 0
+  Set csPos = 0
+  For (naCtr = 1 To Size(Not_Aliased->NA, 5))
+    ;;set stat = log_msg("codeset to add:", cnvtstring(codesetcd))
+    ;;set stat = log_msg("Exist codeset:", cnvtstring(Not_Aliased->NA[naCtr]->CodeSet))
+    If (Not_Aliased->NA[naCtr]->CodeSet = codeSetCD)
+      Set csPos = naCtr
+      Set naCtr = (Size(Not_Aliased->NA, 5) + 1)
+    EndIf
+  EndFor
+  ;;set stat = log_msg("CS Pos:", cnvtstring(cspos))
+  Set csPos = Insert_Not_Aliased_NA(codeSetCD, codeSetName, csPos)
+  For (cvCtr = 1 To Size(Not_Aliased->NA[csPos]->CV, 5))
+    If (Not_Aliased->NA[csPos]->CV[cvCtr]->CodeValue = codeValue)
+      Set cvPos = cvCtr
+      Set cvCtr = (Size(Not_Aliased->NA[csPos]->CV, 5) + 1)
+    EndIf
+  EndFor
+  Set cvPos = Insert_Not_Aliased_CV(codeValue, csPos, cvPos)
+  /***
+  for (naCtr=1 to size(not_aliased->na,5))
+    set stat = log_msg("COde set:", not_aliased->NA[nactr]->CodeSetDisplay)
+    for (cvCtr = 1 to size(not_aliased->NA[nactr]->CV, 5))
+      set stat = log_msg("Code Value:",
+          uar_get_code_display(not_aliased->NA[nactr]->CV[cvctr]->CodeValue))
+    endfor
+  endfor
+  ****/
+  ;;return (0)
+  return (Size(Not_Aliased->NA, 5))
+End ;; End
+ 
+;;;; ========
+ 
+Subroutine Insert_Not_Aliased_NA(codeSetCD, codeSetName, insertPos)
+  Declare tmpCSCtr = I2
+  Set tmpCSCtr     = insertPos
+  If (insertPos = 0)
+    Set tmpCSCtr = (Size(Not_Aliased->NA, 5) + 1)
+    Set stat = AlterList(Not_Aliased->NA, tmpCSCtr)
+    Set Not_Aliased->NA[tmpCSCtr]->CodeSet_Ctr = 0
+  Else
+    Set tmpCSCtr = insertPos
+  EndIf
+  Set Not_Aliased->NA[tmpCSCtr]->CodeSet = codeSetCD
+  Set Not_Aliased->NA[tmpCSCtr]->CodeSetDisplay = codeSetName
+  Set Not_Aliased->NA[tmpCSCtr]->CodeSet_Ctr = 
+        (Not_Aliased->NA[tmpCSCtr]->CodeSet_Ctr + 1)
+  return (tmpCSCtr)
+End  ;; End
+ 
+;; =======
+ 
+Subroutine Insert_Not_Aliased_CV(codeValueCD, csIndex, insertPos)
+  Declare tmpCVCtr = i2
+  Set tmpCVCtr = insertPos
+  If (insertPos = 0)
+    Set tmpCVCtr = (Size(Not_Aliased->NA[csIndex]->CV, 5) + 1)
+    Set stat = AlterList(Not_Aliased->NA[csIndex]->CV, tmpCVCtr)
+    Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValue_Ctr = 0
+  Else
+    Set tmpCVCtr = insertPos
+  EndIf
+  Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValue = codeValueCD
+  Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValueDisplay =
+            UAR_Get_Code_Display(codeValueCD)
+  Set Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValue_Ctr =
+         (Not_Aliased->NA[csIndex]->CV[tmpCVCtr]->CodeValue_Ctr + 1)
+  return (Size(Not_Aliased->NA[csIndex]->CV, 5))
+End  ;; End
+ 
+;;;; =======
+ 
+Subroutine Load_Code_Hold(codeValue)
   Set stat = AlterList(Hold_Code->HC, 0)
   Select Into "nl:"
     cv.code_set,
@@ -172,11 +291,11 @@ Subroutine Load_Code_Hole(codeValue)
     Hold_Code->HC[1]->CodeSetDisplay = cvs.display
     Hold_Code->HC[1]->CodeValue      = codeValue
   With MaxRec = 1
-  return (Size(Hold_Code->HC, 5)
+  return (Size(Hold_Code->HC, 5))
 End   ;; end
-
+ 
 ;;;; =======
-
+ 
 Subroutine Clear_Not_Aliased(junk)
   For (naCtr = 1 TO Size(Not_Aliased->NA, 5))
     Set stat = AlterList(Not_Aliased->NA[naCtr]->CV, 0)
@@ -185,12 +304,50 @@ Subroutine Clear_Not_Aliased(junk)
   return (0)
 End ;; End
  
-;;;; ==================== 
+;;;; ====================
  
-Subroutine Send_Email_Msg(toEmail, msgToSend)
+Subroutine Build_Email_Msg(procID, procName)
+
+  Declare MyMsg = VC
+  Set MyMsg = ConCat(
+     "PROC ID:", CnvtString(procID), LINE_FEED,
+     "NAME:", procName)
+  For (naCtr = 1 To Size(Not_Aliased->NA,5))
+    Set MyMsg = ConCat(Trim(MyMsg), LINE_FEED, LINE_FEED,
+        "     ", "CODE SET:",
+            Trim(CnvtString(Not_Aliased->NA[naCtr]->CodeSet)), LINE_FEED,
+        "     ", "CODE SET DISPLAY:",
+            Trim(Not_Aliased->NA[naCtr]->CodeSetDisplay), LINE_FEED,
+        "         ", "Times CodeSet Occured:",
+            Trim(CnvtString(Not_Aliased->NA[naCtr]->CodeSet_Ctr))
+        )  ;;; End the concat
+    For (cvCtr = 1 To Size(Not_Aliased->NA[naCtr]->CV, 5))
+      Set MyMsg = ConCat(Trim(MyMsg), LINE_FEED,
+        "           ", "CODE VALUE:",
+             Trim(CnvtString(Not_Aliased->NA[naCtr]->CV[cvCtr]->CodeValue)), LINE_FEED,
+        "           ", "CODE VALUE DISPLAY:",
+             Trim(UAR_Get_Code_Display(Not_Aliased->NA[naCtr]->CV[cvCtr]->CodeValue)), LINE_FEED,
+        "               ", "Times CodeValue Occured:",
+             Trim(CnvtString(Not_Aliased->NA[naCtr]->CV[cvCtr]->CodeValue_Ctr))
+             )  ;; End hte contact
+    EndFor
+  EndFor
+  For (eaCtr = 1 To Size(Email_List->EL, 5))
+    ;;;;set stat = log_msg("Email add:", Email_List->EL[eaCtr]->To_Address)
+    Set stat = Send_Email_Msg(Email_List->EL[eaCtr]->To_Address,
+                  MyMsg, procName)
+  EndFor
+  return (1)
+End ;; End
+ 
+;;;; ====================
+ 
+Subroutine Send_Email_Msg(toEmail, msgToSend, processName)
   Set stat = UAR_Send_Mail(
                           NullTerm(toEmail),
-                          NullTerm(ConCat(Trim(MyEnv), " - ESI Log daily rpt: ",
+                          NullTerm(ConCat(Trim(MyEnv), " - " , 
+                                          Trim(processName), "-",
+                                      "Daily Alias Rpt: ",
                                       Trim(EmailDate))),
                           NullTerm(msgToSend),
                           NullTerm(FromEmailAddress),
@@ -238,7 +395,7 @@ End ;; End
  
 Subroutine Get_Out_Interfaces(junk)
   Declare tmpOICtr = I2
-  Select Into "nl:"
+  Select Distinct Into "nl:"
     opi.proc_name,
     opi.proc_desc,
     opi.service,
@@ -249,7 +406,7 @@ Subroutine Get_Out_Interfaces(junk)
        oen_personality op
   Plan opi
     Where opi.service = "Outbound"
-          and opi.interfaceid = 1026
+          ;;;and opi.interfaceid = 1026
    Join op
     Where op.interfaceid = opi.interfaceid AND
           op.name = "PACKESO" AND
@@ -302,11 +459,13 @@ End ;; End
 ;;;; ======================
  
 Subroutine Parse_CD_Values(msg)
+  Set stat = AlterList(Msg_CD->MC, 0)
   declare myctr = i2 with public, noconstant(0)
   Declare startPos  = I2
   Declare startLoop = I2
   Declare endPos    = I2
   Declare sinChar   = C1
+  ;;;set stat = log_msg("Msg:", msg)
   Set startPos = FindString(NOT_ALIASED_VALUE, msg)
   While (startPos > 0)
     Set startLoop = (startPos + Size(NOT_ALIASED_VALUE, 1))
@@ -325,10 +484,9 @@ Subroutine Parse_CD_Values(msg)
     Set stat = Add_MSG_CD(tmpValue)
     Set startPos = FindString(NOT_ALIASED_VALUE, msg, startLoop)
     Set myctr = myctr + 1
-    ;;if (myctr > 10)
-      ;;set startPos = 0
-    ;;endif
+ 
   EndWhile
+  set stat = log_msg("CD Cnt:", cnvtstring(size(msg_cd->MC, 5)))
   return (Size(Msg_CD->MC, 5))
 End ;; End
  
@@ -338,9 +496,20 @@ Subroutine Add_MSG_CD(cdValue)
   Declare tmpMCCtr = I2
   Set tmpMCCtr = (Size(Msg_CD->MC, 5) + 1)
   Set stat     = AlterList(Msg_CD->MC, tmpMCCtr)
-  Set Msg_CD->MC[tmpMCCtr]->CD_Value = cdValue
+  Set Msg_CD->MC[tmpMCCtr]->CD_Value = CnvtReal(cdValue)
   return (Size(Msg_CD->MC, 5))
 End
+ 
+;;;; ===================
+ 
+Subroutine Add_To_Email_List(emailToAdd)
+  Declare tmpELCtr = I2
+  Set tmpELCtr = (Size(Email_List->EL, 5) + 1)
+  Set stat = AlterList(Email_List->EL, tmpELCtr)
+  Set Email_List->EL[tmpELCtr]->To_Address = emailToAdd
+  return (Size(Email_List->EL, 5))
+End ;; End
+ 
  
 ;;;; END  =================
  
