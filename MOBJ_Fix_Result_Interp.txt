@@ -1,0 +1,90 @@
+execute oencpm_msglog build("Begin of MOBJ_Fix_Result_Interp", char(0))
+;;;delare t=f8
+/***************
+  SP/AG - 08/01/2015
+  Cloverleafing having an issue with '&' subcombonent seperator
+   need to change them out for "^". Cerner came up with is fix and I will
+   stick with it. Not the best way to fix, but is the simplest
+
+   Will need to loop over the interp, moving the sub componets up to the field and
+    then dump the interp to get rid of the sub components, create a new 1 and 
+     place the id back in the first spot
+     so |id&lname&fname| becomes |id^lname^fname|
+
+     Issue is that if the values in the fields being replaced are needed another
+     fix will be needed
+     Issue - will only work for 1 Interp
+ ****************/
+
+Free Record Primary_Interp
+Record Primary_Interp
+ (
+   1 PI[*]
+      2 ID = VC
+      2 LName = VC
+      2 FName = VC
+      2 MName = VC
+      2 Suffix     = VC
+      2 Prefix  = VC
+      2 ID_Type = VC
+ )  ;; Ed
+
+Declare Get_Primary_Interp(rogIndex) = I2
+Declare Populate_MSG_Primary_Interp(rogIndex) = I2
+
+For (rogCtr = 1 To Size(oen_reply->RES_ORU_GROUP, 5))
+  If (Get_Primary_Interp(rogCtr) > 0)
+    Set stat = AlterList(oen_reply->RES_ORU_GROUP [rogCtr]->OBR [1]->prim_res_interp, 0)
+    Set stat = Populate_MSG_Primary_Interp(rogCtr)
+  EndIf
+EndFor
+;;;;set stat = uar_kill_me(0)
+execute oencpm_msglog build("End of MOBJ_Fix_Result_Interp", char(0))
+
+;;;; SUBS below
+
+Subroutine Populate_MSG_Primary_Interp(rogIndex)
+  Set stat = AlterList(oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp,
+               Size(Primary_Interp->PI, 5))
+  For (priCtr = 1 To Size(Primary_Interp->PI, 5))
+    Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->alias =
+             Primary_Interp->PI[priCtr]->ID
+    Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->start_dt_tm =
+             Primary_Interp->PI[priCtr]->LName
+    Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->end_dt_tm =
+             Primary_Interp->PI[priCtr]->FName
+    Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->nurse_unit = 
+             Primary_Interp->PI[priCtr]->MName
+    Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->room = 
+             Primary_Interp->PI[priCtr]->Suffix
+     Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->bed = 
+             Primary_Interp->PI[priCtr]->Prefix
+     Set oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->facility_id->name_id = 
+            Primary_Interp->PI[priCtr]->ID_Type
+  EndFor
+  return (Size(oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp, 5))
+End ;; End
+
+;;;; ===============
+
+Subroutine Get_Primary_Interp(rogIndex)
+  Set stat = AlterList(Primary_Interp->PI, 0)
+  For (priCtr = 1 To Size(oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp, 5))
+    Set stat = AlterList(Primary_Interp->PI, priCtr)  ;; leave it this way in case i need to add a filter
+    Set Primary_Interp->PI[priCtr]->ID = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->alias
+    Set Primary_Interp->PI[priCtr]->LName = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->last_name
+    Set Primary_Interp->PI[priCtr]->FName = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->first_name
+    Set Primary_Interp->PI[priCtr]->MName = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->middle_name
+    Set Primary_Interp->PI[priCtr]->Suffix = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->suffix
+     Set Primary_Interp->PI[priCtr]->Prefix = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->prefix
+     Set Primary_Interp->PI[priCtr]->ID_Type = 
+              oen_reply->RES_ORU_GROUP [rogIndex]->OBR [1]->prim_res_interp [priCtr]->prsnl->assign_univ_id_type
+  EndFor
+  return (Size(Primary_Interp->PI, 5))
+End ;; End
