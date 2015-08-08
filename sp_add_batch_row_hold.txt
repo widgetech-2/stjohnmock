@@ -1,0 +1,149 @@
+drop program sp_add_batch_row_hold go
+create program sp_add_batch_row_hold
+ 
+;;;; %i /cerner/w_custom/m22_cust/code/script/sp_add_batch_row_hold.prg go
+ 
+execute oencpm_msglog build("Begin of OENDB_ADD_BATCH", char(0))
+
+/************************
+  SP - AG - 08/08/2015
+  Script will insert rows into the OEN_LIJ_BATCH table
+  Before insertion, script will confirm key created is unique
+ ************************/
+ 
+If (Validate(reply->status_data->data, "Z") = "Z")
+  RECORD  REPLY
+   (
+     1  STATUS_DATA
+       2  STATUS  =  C1
+       2  SUBEVENTSTATUS [ 1 ]
+         3  OPERATIONNAME      =  C25
+         3  OPERATIONSTATUS    =  C1
+         3  TARGETOBJECTNAME   =  C25
+         3  TARGETOBJECTVALUE  =  VC
+   )  ;; End the rec
+EndIf
+ 
+Declare TxKey_Does_Exist = I2
+Declare Get_TxKey(procID, seqNum) = VC
+Declare Check_TxKey_Exist(txKey) = I2
+ 
+SET  REPLY->STATUS_DATA->STATUS  =  "F"
+ 
+FREE SET CNT
+SET  CNT  =  SIZE(OEN_BATCH->QLIST, 5)
+ 
+IF (CNT = 0)
+  GO TO EXIT_SCRIPT
+ENDIF
+ 
+FREE SET TRY_CNT
+SET  TRY_CNT  =  0
+ 
+# RETRY_BILL
+ 
+SET TRY_CNT = (TRY_CNT + 1)
+ 
+SET TKEY    =  Get_TxKey(OEN_BATCH->QLIST[1]->PROC_ID,
+                         OEN_BATCH->QLIST[1]->SEQ_NO)
+Set TxKey_Does_Exist = Check_TxKey_Exist(TKEY)
+ 
+While ((TxKey_Does_Exist = TRUE) AND (TRY_CNT < 10))
+  Set TRY_CNT = TRY_CNT + 1
+  Call Pause(3)
+  Set TKey = Get_TxKey(OEN_BATCH->QLIST[1]->PROC_ID,
+                         OEN_BATCH->QLIST[1]->SEQ_NO)
+  Set TxKey_Does_Exist = Check_TxKey_Exist(TKEY)
+EndWhile
+ 
+SET CUR_LEN =  Size(OEN_BATCH->QLIST[1]->msg_text, 1)
+ 
+Set OEN_BATCH->QLIST[1]->PART_SIZE = CnvtString(CUR_LEN)
+ 
+If (Cur_Len < 32000)
+  Set Txt = Oen_batch->qlist[1]->msg_text
+Else
+  Set Txt = SubString(1, Cur_Len, Oen_batch->qlist[1]->msg_text)
+EndIf
+ 
+If (SubString(1, 1, OEN_Batch->QList[1]->Proc_ID) != " ")
+  Set OEN_Batch->QList[1]->Proc_ID = ConCat(" ",
+                 Trim(OEN_Batch->QList[1]->Proc_ID))
+EndIf
+ 
+;;execute oencpm_msglog build("Tx key:", tkey, char(0))
+INSERT FROM (OEN_LIJ_BATCH T)
+  SET
+   T.TX_KEY      = TKEY,
+   T.MSGID       = OEN_BATCH->QLIST[1]->MSG_ID,
+   T.PART_NO     = OEN_BATCH->QLIST[1]->PART_NO,
+   T.EVENTID     = OEN_BATCH->QLIST[1]->EVENT_ID,
+   T.INTERFACEID = OEN_BATCH->QLIST[1]->PROC_ID,
+   T.SEQ_NO      = OEN_BATCH->QLIST [1]->SEQ_NO,
+   T.Create_Dt_Tm = CnvtDateTime(CURDATE, CURTIME3),
+   T.MSG_DATE    = FORMAT(CnvtDateTime(CURDATE, CURTIME3), "MM/DD/YYYY;;D"),
+   T.MSG_TIME    = FORMAT(CnvtDateTime(CURDATE, CURTIME3), "HH:MM:SS;3;M"),
+   T.MSG_SIZE    = OEN_BATCH->QLIST[1]->MSG_SIZE,
+   T.PART_SIZE   = OEN_BATCH->QLIST[1]->PART_SIZE,
+   T.PARENT_ENTITY_ID = Oen_Batch->QList[1]->parent_entity_id,
+   T.PARENT_ENTITY_NAME = Oen_Batch->QList[1]->Parent_Entity_Name,
+   T.MSG_TEXT    = Txt
+With MaxRec = 1
+ 
+;;;;;Set reply->status_data->status = "S"
+call echo(build("Here is currqual:", curqual, char(0)))
+IF (CURQUAL != 0)
+  SET  REPLY->STATUS_DATA->STATUS  =  "S"
+ELSE
+  IF (TRY_CNT < 100)
+    GO TO  RETRY_BILL
+  ENDIF
+ 
+  CALL ECHO ("(oendb_add_bill) error(s) detected: ", 0)
+  SET  ERRMSG  =  FILLSTRING ( 132 ,  " " )
+  SET  ERRCODE  =  1
+  WHILE (ERRCODE != 0)
+    SET  ERRCODE  =  ERROR ( ERRMSG ,  0 )
+    CALL ECHO ( ERRMSG )
+  ENDWHILE
+ENDIF
+ 
+# EXIT_SCRIPT
+ 
+IF (REPLY->STATUS_DATA->STATUS = "S")
+  COMMIT
+ELSE
+  ROLLBACK
+ENDIF
+ 
+;;;; Subs below
+ 
+Subroutine Get_TxKey(procID, seqNum)
+  Declare tmpTxKey = VC
+ 
+  SET STIME   =  CNVTSTRING(CURTIME3, 7, 0, R)
+  SET SDATE   =  CNVTSTRING(CURDATE,  5, 0, R)
+  SET SSEQ    =  CNVTSTRING(CNVTINT(seqNum), 10, 0, R)
+  Set tmpTxKey = CONCAT(Trim(procID), Trim(SDATE), Trim(STIME), Trim(SSEQ))
+  return (tmpTxKey)
+End ;; End
+ 
+;;;; =============
+ 
+Subroutine Check_TxKey_Exist(txKey)
+  Declare tmpDoesExist = I2 With Public, NoConstant(FALSE)
+  ;;execute oencpm_msglog build("Txkey exists:", txKey, char(0))
+  Select Into "nl:"
+    olb.msgid
+  From oen_lij_batch olb
+  Where olb.tx_key = txKey
+  Detail
+    tmpDoesExist = TRUE
+  With MaxRec = 1
+  ;;execute oencpm_msglog build("Does Exist:", tmpDoesExist, char(0))
+  return (tmpDoesExist)
+End ;; End the sub
+ 
+End
+Go
+ 
