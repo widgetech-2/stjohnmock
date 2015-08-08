@@ -1,0 +1,51 @@
+execute oencpm_msglog build("Begin of MORIG_Main_Outbound", char(0))
+
+Declare Chk_For_Hold_Logic(e_id)    = F8
+Declare Get_Double_Value(strMean) = F8
+
+Declare MOMO_Encntr_ID = F8 With Public,
+  Constant(Get_Double_Value("encntr_id"))
+
+execute oencpm_msglog build("End of MORIG_Main_Outbound", char(0))
+
+;;;; SUBS Below
+
+Subroutine Chk_For_Hold_Logic(e_id)
+  Declare tmpFndRow = I2 With Public, NoConstant(FALSE)
+  Select Into "nl:"
+    cv.code_value
+  From code_value cv,
+              code_value_alias cva,
+              encounter e,
+              organization_alias oa
+  Plan e
+     Where e.encntr_id = o.encntr_id
+   Join oa
+     Where oa.organization_id = e.organization_id AND
+                   oa.org_alias_type_cd = 1128.0  ;; client code
+    Join cva
+      Where cva.code_set = 100010.0 AND
+                     cva.alias = oa.alias
+    Join cv
+       Where cv.code_value = cva.code_value AND
+                     cv.cdf_meaning = "HOLD_LOGIC" AND
+                     cv.active_ind = TRUE
+  Detail
+    tmpFndRow = TRUE
+  With MaxRec = 1
+  return (tmpFndRows)
+End  ;; End
+
+;;;; =====================
+
+Subroutine Get_Double_Value(strMean)
+  Declare tmpDblVal = F8 With Public, NoConstant(0.0)
+  Set strMean = CnvtLower(strMean) 
+  For (dblCtr = 1 to Size(oen_reply->cerner->doublelist, 5))
+     If (CnvtLower(oen_reply->cerner->doublelist[dblCtr]->strmeaning) = strMean)
+       Set tmpDblVal = CnvtReal(oen_reply->cerner->doublelist[dblCtr]->dval)
+       Set dblCtr = (Size(oen_reply->cerner->doublelist, 5) + 1)
+     EndIf
+  EndFor
+  return (tmpDblVal)
+End  ;; End

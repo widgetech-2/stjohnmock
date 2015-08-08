@@ -1,0 +1,539 @@
+/***
+  Script will check to see if all orders associated to an encouter has been completed/canceled
+  Remove the ORC/OBR/OBX, write to the OEN_LIJ_BATCH
+  if all orders all orders associated to encntr on the OEN_LIJ_BATCH ard done, attach to msg, and send
+  else dump message
+ ***/
+
+Free Record OEN_Batch
+Record oen_batch
+ (
+    1 Queue_Name = VC
+    1 QList [*]
+       2 Msg_ID    = C15
+       2 Part_No   = C4
+       2 Event_ID  = C4
+       2 Proc_ID   = C5
+       2 Seq_No    = C10
+       2 Msg_Date  = C10
+       2 Msg_Time  = C8
+       2 Msg_Size  = C5
+       2 Part_Size = C5
+       2 Parent_Entity_ID  = F8
+       2 Parent_Entity_Name = C32
+       2 Msg_Text  = VC
+ )  ;; End the rec
+
+Free Record OrderIDS
+Record OrderIDS
+ (
+     1 OI[*]
+        2 Order_ID = F8
+        2 OS_Seg = VC
+ )  ;; End
+
+Free Record PDM_Results
+Record PDM_Results
+ (
+    1 PR[*]
+       2 PDM = VC
+       2 Order_Value = VC
+       2 Result[*]
+           3 Value = VC
+ )  ;; End
+
+;;;; M001+
+Free Record Tbl_Msg_Info
+Record Tbl_Msg_Info
+ (
+    1 TMI[*]
+        2 Tbl_Msg = VC
+        2 Sequence_Num = F8
+ )  ;;;; End
+
+;;;; M001-
+
+Declare HOLD_RESULTS = I2 With Public,
+  NoConstant(FALSE)
+Declare ORDER_COMPLETED = F8 With Public,
+  Constant(UAR_Get_Code_By("DISPLAYKEY", 6004, "COMPLETED"))
+Declare ORDER_CANCLED = F8 With Public,
+  Constant(UAR_Get_Code_By("DISPLAYKEY", 6004, "CANCELED"))
+
+Declare Order_Status = F8
+
+;;;; Function will load the order/results to the hold table
+Declare Load_To_OEN_Batch(junk) = I2
+;;;; Function will get the interface id for the calling interface, used to load rec to hold table
+Declare Get_Interface_ID(junk) = VC
+;;;; Function will retrieve the held results on the hold table
+Declare Get_Results(o_id, index) = I2
+;;;; Function will get all order ids associated to this accession number
+Declare Get_Order_IDs(o_id) = I2
+;;;; Function will update the hold table to show that the results have been released
+Declare Update_Hold_Results(o_id) = I2
+;;;; Function will make sure the order in the message is on the table to be held
+Declare Confirm_Order_ID_On_Tbl(o_id) = I2
+;;;; Function will determine if message was completed or in process for this order
+;;;; we do NOT want orders to load that are not completed
+Declare Check_Order_Status(o_id, status_dt) = I2
+;;;; Function will update the row that contains the messages OBR in case it is a corrected report
+Declare Update_Result_Msg(o_id, msg) = I2
+;;;; Function will link results by order code
+Declare Load_To_PDM(obr_msg) = I2
+Declare Parse_Msg(obr_msg, pipe_cnt_max) = VC  ;; returns the PDM number in the message
+Declare Find_Exist_PDM(pdm) = I2
+Declare Add_To_PDM_List(pdm, obr_msg) = I2
+Declare Add_To_Result_List(index, obr_msg) = I2
+Declare Get_Table_Message(parent_id) = I2
+
+Declare Log_Msg(msg) = i2
+
+Declare SEND_FIRST_ORC_ONLY = I2
+Declare Proc_ID = I2
+Set SEND_FIRST_ORC_ONLY = FALSE
+Set Proc_ID = CnvtInt(Get_Interface_Id(0))
+Case (Proc_ID)
+  Of 1122:    ;; Guterrez
+    Set SEND_FIRST_ORC_ONLY = TRUE
+EndCase
+
+Declare SegOBR = VC
+Declare SegORC = VC
+Declare SegOBX = VC
+Declare SegDelim = C1
+Declare SegPos     = I2
+Declare FoundDump = I2  ;; Will tell me if the result was dumped in the ModObj script
+Declare Process_Msg = VC
+
+Set SegDelim = Char(13)
+Set SegOBR = ConCat(SegDelim, "OBR|")
+Set SegORC = ConCat(SegDelim, "ORC|")
+Set SegOBX  = ConCat(SegDelim, "OBX|")
+Set FoundDump =  FindString(DUMP_THIS_MESSAGE, oen_request->org_msg)
+
+Set stat = Log_Msg(ConCat("Order id:", Trim(CnvtString(MSG_Order_ID))))
+If (Validate(MSG_Control_ID, "Z") != "Z")
+  Set stat = Log_Msg(ConCat("CtrlID:", Trim(MSG_Control_ID)))
+EndIf
+If (Validate(MSG_Patient_Name, "Z") != "Z")
+  Set stat = Log_Msg(ConCat("Name:", Trim(MSG_Patient_Name)))
+EndIf
+
+Set stat = Load_To_OEN_Batch(MSG_Order_ID, "ORG_MSG", oen_request->org_msg)
+
+Set Order_Status = Check_Order_Status(MSG_Order_ID, MSG_Status_Dt)
+If (Order_Status Not In(ORDER_COMPLETED, ORDER_CANCELED))
+  Set stat = Log_Msg("Not complete, leaving")
+  Set oen_reply->out_msg = Build("OEN_IGNORE", Char(0))
+  Go To EXIT_HOLD_RESULTS
+EndIf
+
+/***********************************
+  Need to make sure current order/results are on hold table
+  Done in case or replaying of results or if need to hold this order/result
+  We really only want to hold if more then 1 order on an accession, but because of
+       relfex and add ons might be a good idea to write to hold table anyway
+ ***********************************/
+If (Order_Status != ORDER_CANCELED)
+  Set SegPos = FindString(SegORC, oen_request->org_msg)
+  If (SegPos = 0)
+    Set SegPos = FindString(SegOBR, oen_request->org_msg)
+  EndIf
+  If (SegPos > 0)
+         Declare tmpRes = VC
+         Set tmpRes = SubString((SegPos + 1), 
+                           (Size(oen_request->org_msg, 1) - SegPos), oen_request->org_msg)
+         Set tmpRes = ConCat(Trim(tmpRes))
+          If (Confirm_Order_ID_On_Tbl(MSG_Order_ID) = FALSE)
+             Set stat = Log_Msg("Original load of message to table")
+             Set stat = Load_To_OEN_Batch(MSG_Order_ID, "ORDERS", tmpRes)
+          Else
+             ;;; M001+
+            If (Get_Table_Message(MSG_Order_ID) > 0)
+              Declare tblMsgDate = VC
+              Set tblMsgDate = Parse_Msg(Tbl_Msg_Info->TMI[1]->Tbl_Msg, 23)
+              Set stat = Log_Msg(ConCat("Tbl Msg Date:", Trim(tblMsgDate)))
+              Set stat = Log_Msg(ConCat(Trim(tblMsgDate), "==", Trim(Msg_Status_Dt))) 
+              If (tblMsgDate = Msg_Status_Dt)
+                Declare tmpCurTime = F8 With Public, Constant(CURTIME3)
+                Set stat = Log_Msg(ConCat("Time Diff:",
+                            Trim(CnvtString(tmpCurTime - Tbl_Msg_Info->TMI[1]->Sequence_Num))))
+                If ((tmpCurTime - Tbl_Msg_Info->TMI[1]->Sequence_Num) > 10000)
+                  Set stat = Log_Msg("Message is same, dump it")
+                  Set oen_reply->out_msg = Build("OEN_IGNORE", Char(0))
+                  Go To EXIT_HOLD_RESULTS
+                EndIf
+              Else
+                Set stat = Log_Msg("Message is different, Updating existing message")
+                Set stat = Update_Result_Msg(MSG_Order_ID, tmpRes)
+              EndIf  ;; End the tblMsgDate if
+            EndIf ;; End the get table message if
+          EndIf  ;; End the confirm order id if
+    EndIf
+EndIf
+
+/**********************************
+  Need to confirm that all of the orders associated to the accession number is on the 
+  OEN_LIJ_BATCH table. 
+  Done because of downtimes
+ **********************************/
+Set stat = Get_Order_IDs(MSG_Order_ID)
+
+Set stat = Log_Msg(ConCat("Size of orders:", CnvtString(Size(orderids->oi, 5))))
+For (ctr = 1 To Size(OrderIDS->OI, 5))
+     If (Confirm_Order_ID_On_Tbl(OrderIDS->OI[ctr]->Order_ID) = FALSE)
+         Set Hold_Results = TRUE
+         Set ctr = (Size(OrderIDS->OI, 5) + 1)
+     EndIf
+EndFor
+
+If (Hold_Results = TRUE)
+ Set stat = Log_Msg("About to Hold")
+  Set oen_reply->out_msg = Build("OEN_IGNORE", Char(0))
+Else
+  Set stat = Log_Msg("Going to release")
+  Set SegPos = FindString(SegORC, oen_request->org_msg)
+  If (SegPos = 0)
+     ;;;; This should be a result
+     Set stat = Log_Msg("This is result")
+     Set SegPos = FindString(SegOBR, oen_request->org_msg)
+  EndIf
+  If (SegPos = 0)  ;; Catch all, just in case
+      Set SetPos = Size(oen_request->org_msg, 1)
+  EndIf
+  ;;;; Drop the ORC, will place on at bottom of script
+  Set oen_reply->out_msg = SubString(1, SegPos, oen_request->org_msg)
+  ;;;; Get the results that where on hold and append them to the message
+  For (ctr = 1 To Size(OrderIDS->OI, 5))
+     ;;;; Just a check to make sure the row was returned
+     If (Get_Results(OrderIDS->OI[ctr]->Order_ID, ctr) > 0)
+        If (FindString(DUMP_THIS_MESSAGE, OrderIDS->OI[ctr]->OS_Seg) = 0)
+          Set stat = Load_To_PDM(OrderIDS->OI[ctr]->OS_Seg)
+        EndIf
+      EndIf
+      Set stat = Update_Hold_Results(OrderIDS->OI[ctr]->Order_ID)      
+  EndFor
+  If (SEND_FIRST_ORC_ONLY = TRUE)
+    For (pdmCtr = 2 To Size(PDM_Results->PR, 5))
+       Set SegPos = FindString(SegOBR, PDM_Results->PR[pdmCtr]->Order_Value)
+       If (SegPos > 0)
+         Set PDM_Results->PR[pdmCtr]->Order_Value = 
+                   SubString((SegPos + 1), (Size(PDM_Results->PR[pdmCtr]->Order_Value, 1) - SegPos), 
+                                            PDM_Results->PR[pdmCtr]->Order_Value)
+       EndIf
+  EndFor
+  EndIf
+  For (pdmCtr = 1 To Size(PDM_Results->PR, 5))
+    Set oen_reply->out_msg = ConCat(Trim(oen_reply->out_msg), SegDelim, 
+                                     Trim(PDM_Results->PR[pdmCtr]->Order_Value))
+    For (resCtr = 1 To Size(PDM_Results->PR[pdmCtr]->Result, 5))
+      Set oen_reply->out_msg = ConCat(Trim(oen_reply->out_msg), SegDelim, 
+                                     Trim(PDM_Results->PR[pdmCtr]->Result[resCtr]->Value))
+    EndFor
+  EndFor
+  If (FindString(SegOBR, oen_reply->out_msg) = 0)
+    Set stat = Log_Msg("Msg does not have an OBR, DUMP")
+    Set oen_reply->out_msg = Build("OEN_IGNORE", Char(0))
+  Else
+    Set stat = Log_Msg("Sending the message")
+    Set oen_reply->out_msg = CONCAT(TRIM(oen_reply->out_msg), Char(0))
+  EndIf
+EndIf
+
+#EXIT_HOLD_RESULTS
+Set stat = AlterList(OrderIDS->OI, 0)
+Set stat = AlterList(oen_batch->QList, 0)
+For (pdmCtr = 1 To Size(PDM_Results->PR, 5))
+  Set stat = AlterList(PDM_Results->PR[pdmCtr]->Result, 0)
+EndFor
+Set stat = AlterList(PDM_Results->PR, 0)
+;;;;set stat = uar_kill_me(0)
+Set stat = Load_To_OEN_Batch(MSG_Order_ID, "LOG_MSG", Process_Msg)
+execute oencpm_msglog build("End of MORIG_Hold_Results", char(0))
+
+;;;; Subs below
+
+Subroutine Log_Msg(msg)
+  Set Process_Msg = ConCat(Trim(Process_Msg),
+                                           Char(13), Char(10), Trim(msg))
+  execute oencpm_msglog build(msg, char(0))
+  return (1)
+End ;; End
+
+;;;; =======================
+
+Subroutine Load_To_PDM(obr_msg)
+  Declare msgPDM = VC
+  Declare index = I2
+  Set msgPDM = Parse_Msg(obr_msg, 5)
+  Set stat = Log_Msg(ConCat("PDM:", Trim(msgPDM)))
+  Set index = Find_Exist_PDM(msgPDM)
+  Set stat = Log_Msg(ConCat("Index of Exist PDM:", Trim(CnvtString(index))))
+  If (index = 0)
+    Set index = Add_To_PDM_List(msgPDM, obr_msg)
+    Set stat = Log_Msg("Adding to PDM list")
+  EndIf
+  Set stat = Add_To_Result_List(index, obr_msg)
+  return (index)
+End ;; End
+
+;;;; ========================
+
+Subroutine Parse_Msg(obr_msg, pipe_cnt_max)
+  Declare tmpPDM = VC
+  Declare pipePos = I2
+  Declare pipeCtr    = I2
+  Set pipePos = FindString(SegOBR, obr_msg)
+  Set stat = Log_Msg(ConCat("Parse msg:", Trim(CnvtString(pipePos))))
+  If (pipePos > 1)
+    Set stat = Log_Msg("Going for OBR")
+    Set obr_msg = SubString((pipePos + 1), (Size(obr_msg, 1) - pipePos), obr_msg)
+  EndIf
+  Set pipeCtr = 1
+  Set pipePos = FindString("|", obr_msg)
+  While (pipeCtr <= pipe_cnt_max)
+     Set pipeCtr = pipeCtr + 1
+     Set obr_msg = SubString((pipePos + 1), (Size(obr_msg, 1) - pipePos), obr_msg)
+     Set pipePos = FindString("|", obr_msg)
+     If (pipeCtr = pipe_cnt_max)
+       Set tmpPDM = SubString(1, (pipePos - 1), obr_msg)
+     EndIf
+  EndWhile
+  Set stat = Log_Msg(ConCat("Tmp Parse:", Trim(tmpPDM)))
+  Set pipePos = FindString("^", tmpPDM)
+  If (pipePos > 0)
+    Set tmpPDM = SubString(1, (pipePos - 1), tmpPDM)
+  EndIf
+  Set stat = Log_Msg(ConCat("Tmp Parse:", Trim(tmpPDM)))
+  return (tmpPDM)
+End ;; End
+
+;;;; =========================
+
+Subroutine Find_Exist_PDM(pdm)
+  Declare tmpIndex = I2
+  Set tmpIndex = 0
+  For (pdmCtr = 1 To Size(PDM_Results->PR, 5))
+     If (PDM_Results->PR[pdmCtr]->PDM = pdm)
+       Set tmpIndex = pdmCtr
+       Set pdmCtr = (Size(PDM_Results->PR, 5) + 1)
+     EndIf
+  EndFor
+  return (tmpIndex)
+End ;; End
+
+;;;; =========================
+
+Subroutine Add_To_PDM_List(pdm, obr_seg)
+  Declare tmpCnt = I2
+  Declare tmpOBR = VC
+  Set tmpCnt = FindString(SegOBX, obr_seg)
+  Set stat = Log_Msg(ConCat("Found OBX:", Trim(CnvtString(tmpCnt))))
+  If (tmpCnt > 0)
+    Set tmpOBR = SubString(1, (tmpCnt - 1), obr_seg)
+    Set stat = Log_Msg(ConCat("Sub String obr:", Trim(tmpOBR)))
+  Else
+    Set tmpOBR = obr_seg
+  EndIf
+  Set tmpCnt = (Size(PDM_Results->PR, 5) + 1)
+  Set stat        = AlterList(PDM_Results->PR, tmpCnt)
+  Set stat = Log_Msg(ConCat("Adding PDM:", Trim(pdm)))
+  ;;;Set stat = Log_Msg(ConCat("Adding Result:", Trim(tmpOBR)))
+  Set PDM_Results->PR[tmpCnt]->PDM = pdm
+  Set PDM_Results->PR[tmpCnt]->Order_Value = tmpOBR
+  return (Size(PDM_Results->PR, 5))
+End ;; End
+
+;;;; ==========================
+
+Subroutine Add_To_Result_List(index, obr_msg)
+  Declare tmpCnt = I2
+  Declare tmpOBX = VC
+  Set tmpCnt = FindString(SegOBX, obr_msg)
+  If (tmpCnt > 0)
+    Set tmpOBX = SubString((tmpCnt + 1), (Size(obr_msg, 1) - tmpCnt), obr_msg)
+  Else
+    Set tmpOBX = obr_msg
+  EndIf
+  Set tmpCnt = (Size(PDM_Results->PR[index]->Result, 5) + 1)
+  Set stat        = AlterList(PDM_Results->PR[index]->Result, tmpCnt)
+  Set PDM_Results->PR[index]->Result[tmpCnt]->Value = tmpOBX
+  return (Size(PDM_Results->PR[index]->Result, 5))
+End ;; End
+
+;;;; ==========================
+
+Subroutine Check_Order_Status(o_id, status_dt)
+  Declare tmpOrdStatus = F8
+  Set tmpOrdStatus = 0.0
+  Select Into "nl:"
+    oa.order_status_cd
+  From order_action oa
+  Where oa.order_id = o_id AND
+                (Format(oa.action_dt_tm, "YYYYMMDDHHMMSS;;D") = status_dt)
+  Detail
+   If (oa.order_status_cd In(ORDER_COMPLETED, ORDER_CANCELED))  ;; Needed because some rows are same, but diff status
+      tmpOrdStatus = oa.order_status_cd
+   EndIf
+  With NoCounter
+  ;;;;execute oencpm_msglog build("Tm ord status:", tmpOrdStatus, char(0))
+  return (tmpOrdStatus)
+End ;; End
+
+;;;; ==========================
+
+Subroutine Get_Table_Message(parent_id)
+  Set stat = AlterList(Tbl_Msg_Info->TMI, 0)  
+  Select Into "nl:"
+    oen.msg_text,
+    oen.seq_no
+  From oen_lij_batch oen
+  Where oen.parent_entity_id = parent_id AND
+                oen.parent_entity_name = "ORDERS"
+  Order by oen.tx_key DESC  ;;; M001
+  Detail
+    stat = AlterList(Tbl_Msg_Info->TMI, 1)
+    Tbl_Msg_Info->TMI[1]->Tbl_Msg =
+                ConCat(Trim(oen.msg_text))
+   Tbl_Msg_Info->TMI[1]->Sequence_Num =
+                CnvtReal(oen.seq_no)
+  With MaxRec = 1
+  return (Size(Tbl_Msg_Info->TMI, 5))
+End ;; End
+
+;;;; ==========================
+
+Subroutine Confirm_Order_ID_On_Tbl(o_id)
+  Declare tmpGotTbl = I2
+  Set tmpGotTbl = FALSE
+  Select Into "nl:"
+    oen.parent_entity_id,
+    oen.msg_text
+  From oen_lij_batch oen
+  Where oen.parent_entity_id = o_id AND
+                oen.parent_entity_name = "ORDERS"
+  Detail
+    tmpGotTbl = TRUE
+  With MaxRec = 1
+  return (tmpGotTbl)
+End ;; End
+
+;;;; ==============================
+
+Subroutine Update_Hold_Results(o_id)
+  Update Into oen_lij_batch
+  Set eventid = "4"
+  Where parent_entity_id = o_id AND
+                parent_entity_name = "ORDERS"
+  With MaxRec = 1
+  execute oencpm_msglog build("Cur qual update:", curqual, char(0))
+  If (CURQUAL <= 1)
+    Commit
+    execute oencpm_msglog build("Should do the commit", char(0))
+  Else
+    execute oencpm_msglog build("Problem with update on: ", o_id, char(0))
+    rollback
+  EndIf
+  return (CURQUAL)
+End ;; end
+
+;;;; ===============================
+
+Subroutine Get_Results(o_id, index)
+  Declare tmpTXCtr = I2
+  Select Into "nl:"
+    oen.msg_text
+  From oen_lij_batch oen
+  Where oen.parent_entity_id = o_id AND
+                oen.parent_entity_name = "ORDERS"
+  Order by oen.tx_key
+  Detail
+    OrderIDS->OI[index]->OS_Seg = oen.msg_text
+  With MaxRec = 1
+  return (1)
+End ;; End
+
+;;;; ===============================
+
+Subroutine Update_Result_Msg(o_id, msg)
+  Update Into oen_lij_batch oen
+  Set oen.msg_text = msg
+  Where oen.parent_entity_id = o_id AND
+                oen.parent_entity_name = "ORDERS"
+  With MaxRec = 1
+  If (CURQUAL <= 1)
+     Commit
+  Else
+    RollBack
+  EndIf
+  return (CURQUAL)
+End ;; End
+
+;;;; ===============================
+
+Subroutine Get_Order_IDs(o_id)
+  Set stat = AlterList(OrderIDS->OI, 0)
+  Declare tmpOCtr = I2  
+  Select Distinct Into "nl:"
+    aor.order_id
+  From accession_order_r aor,
+             accession_order_r aor2,
+             orders o
+  Plan aor
+    Where aor.order_id = o_id
+   Join aor2
+     Where aor2.accession = aor.accession
+   Join o
+      Where o.order_id = aor2.order_id AND
+                    o.order_status_cd != ORDER_CANCELED
+  Detail
+    tmpOCtr = (Size(OrderIDS->OI, 5) + 1)
+    stat          = AlterList(OrderIDS->OI, tmpOCtr)
+    OrderIDS->OI[tmpOCtr]->Order_ID = aor2.order_id
+  With NoCounter
+  return (Size(OrderIDS->OI, 5))
+End ;; End
+
+;;;; ===============================
+
+Subroutine Load_To_OEN_Batch(parent_id, parent_name, obMsg)
+  Set obMsg     = ConCat(Trim(obMsg, 3), Char(0))
+  Set stat = AlterList(oen_batch->QList, 0)
+  Set stat = AlterList(oen_batch->QList, 1)
+  Set oen_batch->QList[1]->Msg_ID    = Message_Control_ID
+  Set oen_batch->QList[1]->Part_No   = "0"
+  Set oen_batch->QList[1]->Event_ID  = "1"
+  Set oen_batch->QList[1]->Proc_ID   = ConCat(" ", Get_Interface_ID(0))
+  Set oen_batch->QList[1]->Seq_No    = CnvtString(CURTIME3, 7, 0, R)
+  Set oen_batch->QList[1]->Msg_Size  = CnvtString(Size(obMsg, 1))
+  Set oen_batch->QList[1]->Part_Size = CnvtString(Size(obMsg, 1))
+  Set oen_batch->QList[1]->Parent_Entity_ID  = parent_id
+  Set oen_batch->QList[1]->Parent_Entity_Name = parent_name
+  Set oen_batch->QList[1]->Msg_Text  = obMsg
+  ;;;;;execute oencpm_msglog build("Send size:", Size(obMsg, 1), char(0))
+  Execute OENDB_ADD_BATCH_HOLD
+  return (1)  
+End ;; End
+
+;;;; =================================
+
+Subroutine Get_Interface_ID(junk)
+  Declare id      = I4
+  Declare intID = F8
+  Set id               = 0
+  Set intID          = 0
+  ;;;execute oencpm_msglog build("Going after PROC ID: ", char(0))
+  If (CnvtUpper(CURPRCNAME) = "SRV*")
+    Set id = Mod(CnvtInt(SubString(4, 4, CURPRCNAME)), 1024)    
+    Select Into "nl:"
+       pi.interfaceid
+    From oen_procinfo pi
+    Where pi.scp_eid = id
+    Detail
+      intID = pi.interfaceid
+    With MaxRec = 1 
+    execute oencpm_msglog build("intID : ", intID, char(0))
+  EndIf
+  return (CnvtString(intID))
+End  ;;;; End the Get_Interface_ID function
